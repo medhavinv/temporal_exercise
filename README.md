@@ -92,6 +92,7 @@ Every entry is runnable. `./lab.sh <command>`.
 | Concept | Command | Where it lives |
 |---|---|---|
 | Workflows, Activities, Task Queues | `order` | `workflows.py`, `activities.py` |
+| Idempotency / at-least-once | `double-charge` | `charge_payment` |
 | **Event History** | `history` | read it in the Web UI too |
 | **Replay** | `replay-break` | `replay_break.py` |
 | **Durable Timers** | `crash` | `wait_condition(timeout=…)` |
@@ -119,6 +120,51 @@ Not covered, deliberately: Nexus, multi-cluster replication, custom Data
 Converters and payload encryption, interceptors, and Worker Versioning
 (the heavier successor to `patched`). Each is a topic on its own once the
 above is comfortable.
+
+---
+
+## You never have to edit code
+
+Every variation is a flag. Nothing in this repo asks you to uncomment a line.
+
+**Workflow behaviour — variants** (`./lab.sh variants` to list them):
+
+| Variant | What changes | Command |
+|---|---|---|
+| `default` | 10s window, 5 attempts, compensation on | `./lab.sh variant default` |
+| `long-window` | A **30-day** cancellation Timer | `./lab.sh variant long-window` |
+| `no-retries` | `maximum_attempts=1` — first failure is final | `./lab.sh variant no-retries` |
+| `no-compensation` | Skip the saga rollback; customer stays charged | `./lab.sh variant no-compensation` |
+| `broken-determinism` | Calls `datetime.now()` in Workflow code | `./lab.sh variant broken-determinism` |
+
+Or drive them directly: `python starter.py start --variant no-retries`.
+
+**Activity behaviour — Worker flags** (`python worker.py --help`):
+
+| Flag | What it injects |
+|---|---|
+| `--flaky` | Every Activity fails its first two attempts |
+| `--fail-shipping` | `ship_order` fails non-retryably |
+| `--non-idempotent` | `charge_payment` charges again on every retry |
+
+`./lab.sh double-charge` combines the last two ideas: a non-idempotent Activity
+meeting a retry, charging one customer three times for one order.
+
+### Why the split? It's the determinism rule again
+
+This isn't arbitrary tidiness — it's the same constraint the whole system runs on:
+
+- **Workflow** variants travel as Workflow **input**, recorded in the Event
+  History at `WorkflowExecutionStarted`. Replay reads the same recorded bytes
+  forever, so branching on them is safe. Reading the same setting from an
+  environment variable inside Workflow code would break replay the moment a
+  Worker restarted with a different value.
+- **Activity** behaviour can be a process flag, because Activities are never
+  replayed. They run once per attempt, and nothing about them has to be
+  reproducible.
+
+`variants.py` spells this out at length; it's worth reading before the Workflow
+itself.
 
 ---
 
@@ -183,8 +229,17 @@ Records a fresh run, replays it against the real code (passes), then against a
 copy with two Activities swapped (fails with a non-determinism error). It works
 on an in-memory copy, so `workflows.py` is never modified.
 
-For the sandbox check, uncomment the `EXPERIMENT 3` block in `workflows.py` and
-run `./lab.sh order` — `datetime.now()` is rejected before it can do damage.
+For the sandbox check, no editing either:
+
+```bash
+./lab.sh variant broken-determinism
+```
+
+That runs a Workflow that calls `datetime.now()` in Workflow code. The sandbox
+rejects it, the Workflow Task fails on a loop, and the run sits in `RUNNING`
+making no progress — what a bad deploy actually looks like. Note the contrast
+with Activity retries: a failing *Workflow* Task **is** recorded, as
+`WorkflowTaskFailed` events.
 
 ### 4. One concept at a time
 
@@ -209,12 +264,14 @@ and the comments carry the reasoning.
 ./lab.sh test
 ```
 
-Nine tests: Activities mocked by name, so orchestration is the unit under test.
-By default `pytest` uses a **time-skipping** test server — set
-`CANCELLATION_WINDOW` to 30 days and the suite still finishes in about a second.
+Eleven tests: Activities mocked by name, so orchestration is the unit under
+test. By default `pytest` uses a **time-skipping** test server, which
+fast-forwards Timers.
 `./lab.sh test` instead points them at your running server (see
 `tests/conftest.py`), which is what to do when the test-server download is
-blocked.
+blocked. One test uses the `long-window` variant to park on a **30-day** Timer
+and still finish in milliseconds; it skips itself when there is no time
+skipping available.
 
 ---
 
@@ -259,7 +316,8 @@ exists to solve.
 | File | Read it for | What it does |
 |---|---|---|
 | `workflows.py` | The saga. **Start here.** | Defines `OrderWorkflow`: charge payment, reserve inventory, wait out a cancellable Timer window, ship, and compensate (release inventory, refund payment) on cancellation or shipping failure. Exposes a `cancel` Signal and a `status` Query. |
-| `activities.py` | The side-effecting half. | `charge_payment`, `reserve_inventory`, `ship_order` (with heartbeats), and the compensations `refund_payment` / `release_inventory`. `FLAKY_ACTIVITIES` and `FAIL_SHIPPING` inject transient and non-retryable failures on demand. |
+| `activities.py` | The side-effecting half. | `charge_payment`, `reserve_inventory`, `ship_order` (with heartbeats), and the compensations `refund_payment` / `release_inventory`. Failures are injected with Worker flags (`--flaky`, `--fail-shipping`, `--non-idempotent`), never by editing this file. |
+| `variants.py` | Selectable Workflow behaviours. | The named variants and, more usefully, a long explanation of why they travel as Workflow input rather than environment variables. Read this before `workflows.py`. |
 | `concepts.py` | One tiny Workflow per concept. | Update + validator, Child Workflows, Continue-As-New, real cancellation with shielded cleanup, deterministic `now`/`uuid4`/`random`, Local Activities, `patched` versioning, Search Attributes and Memos. Heavily commented — read before running. |
 | `worker.py` | Wiring and Task Queue registration. | Connects to the Service, registers every Workflow and Activity on the `orders` Task Queue, and long-polls until killed. |
 | `starter.py` | The Client, for the saga. | `start`, `status`, `cancel` — start a run, Query a running one, or send it a cancel Signal. |

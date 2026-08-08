@@ -4,8 +4,9 @@ Everything nondeterministic lives here -- network calls, database writes,
 randomness, the clock. Activities are retried automatically, so treat them as
 *at-least-once*: they must be idempotent.
 
-The FLAKY_ACTIVITIES / FAIL_SHIPPING env vars exist so you can trigger the
-failure paths on purpose in Experiment 2 of the README.
+You never need to edit this file to change how it behaves. The Worker exposes
+--flaky, --fail-shipping and --non-idempotent, which set the environment
+variables read below. See `python worker.py --help`.
 """
 
 import asyncio
@@ -31,8 +32,41 @@ def _maybe_fail(name: str) -> None:
         raise RuntimeError(f"{name} failed on attempt {attempt} (injected)")
 
 
+# Stands in for a payments ledger. Module-level state in an Activity is a bad
+# idea in real code (Workers are replaceable and there may be many of them); it
+# exists here only so the --non-idempotent demo has something to corrupt.
+_LEDGER: list[str] = []
+
+
 @activity.defn
 async def charge_payment(order: OrderInput) -> str:
+    """Charge the customer.
+
+    THE IDEMPOTENCY POINT. Activities are *at-least-once*: a retry, a Worker
+    crash after the charge but before the result is reported, or a lost
+    response all cause this to run again for the same logical operation. Only
+    the Activity itself can prevent a double charge, and it does so by keying
+    the side effect on something stable -- here the order id, which is why the
+    payment id is derived from it rather than generated fresh.
+
+    Run the Worker with --non-idempotent --flaky to watch the naive version
+    charge three times for one order.
+    """
+    if os.environ.get("NON_IDEMPOTENT_PAYMENT") == "1":
+        # The naive implementation: append unconditionally, so every retry is
+        # another real charge.
+        _LEDGER.append(order.order_id)
+        charges = _LEDGER.count(order.order_id)
+        activity.logger.warning(
+            "NON-IDEMPOTENT charge for %s -- this order has now been charged %d time(s)",
+            order.order_id,
+            charges,
+        )
+        _maybe_fail("charge_payment")
+        return f"pay-{order.order_id}-x{charges}"
+
+    # The safe version: deriving the payment id from the order id means a retry
+    # produces the same id, so a real gateway would recognise the duplicate.
     _maybe_fail("charge_payment")
     activity.logger.info("Charging %s cents for %s", order.amount_cents, order.order_id)
     await asyncio.sleep(0.2)

@@ -48,14 +48,15 @@ start_server() {
   echo "server up on $ADDRESS (Web UI on port 8233)"
 }
 
+# start_worker [worker flags...] -- e.g. start_worker --flaky
 start_worker() {
   stop_worker
-  env "$@" nohup $PY worker.py > "$RUN/worker.log" 2>&1 &
+  nohup $PY worker.py "$@" > "$RUN/worker.log" 2>&1 &
   echo $! > "$RUN/worker.pid"
   disown 2>/dev/null || true
   sleep 6
   grep -q "polling task queue" "$RUN/worker.log" || { tail -20 "$RUN/worker.log"; die "worker failed to start"; }
-  echo "worker up${1:+ (env: $*)}"
+  echo "worker up${1:+ (flags: $*)}"
 }
 
 stop_worker() {
@@ -70,8 +71,10 @@ stop_server() {
 
 # Start a workflow and echo its ID. Parsed from the Web UI line rather than the
 # human-readable first line, which is prose and liable to be reworded.
+# start_order [variant] -- echoes the new Workflow ID
 start_order() {
-  $PY starter.py start --no-wait 2>&1 | sed -n 's|.*/workflows/\([^ ]*\)$|\1|p' | head -1
+  $PY starter.py start --no-wait ${1:+--variant "$1"} 2>&1 \
+    | sed -n 's|.*/workflows/\([^ ]*\)$|\1|p' | head -1
 }
 
 # Status of one Workflow, read from JSON so it does not depend on table layout.
@@ -114,8 +117,8 @@ exp_signal_query() {
 }
 
 exp_retries() {
-  bold "── retries (FLAKY_ACTIVITIES=1: every activity fails its first 2 attempts) ──"
-  start_worker FLAKY_ACTIVITIES=1
+  bold "── retries (worker --flaky: every activity fails its first 2 attempts) ──"
+  start_worker --flaky
   local wid; wid=$(start_order); echo "started $wid"
   $TC workflow result -w "$wid" >/dev/null 2>&1
 
@@ -144,8 +147,8 @@ for e in events:
 }
 
 exp_compensation() {
-  bold "── saga compensation (FAIL_SHIPPING=1) ──"
-  start_worker FAIL_SHIPPING=1
+  bold "── saga compensation (worker --fail-shipping) ──"
+  start_worker --fail-shipping
   local wid; wid=$(start_order); echo "started $wid"
   sleep 16
   $PY starter.py status "$wid"
@@ -187,6 +190,136 @@ exp_replay_break() {
   $PY replay_break.py "$demo/$wid.json"
 }
 
+# Run one named variant of the order saga. Each variant changes behaviour via
+# Workflow input -- no file in this repo is edited.
+exp_variant() {
+  local name=${1:?variant name required -- see ./lab.sh variants}
+
+  case "$name" in
+    broken-determinism)
+      bold "── variant: broken-determinism ──"
+      echo "This Workflow calls datetime.now() in Workflow code. The sandbox"
+      echo "rejects it, so its Workflow Task fails and retries forever."
+      echo
+      local wid; wid=$(start_order "$name"); echo "started $wid"
+      sleep 8
+      echo "  status:  $(wf_status "$wid")   <- RUNNING, but making no progress"
+      echo
+      echo '  Note the contrast with Activity retries: a failing WORKFLOW task'
+      echo '  IS recorded, as WorkflowTaskFailed events. The Workflow never got'
+      echo '  past its first task, so no Activity was ever scheduled:'
+      echo
+      $TC workflow show -w "$wid" -o json 2>/dev/null | $PY -c '
+import json, sys
+from collections import Counter
+events = json.load(sys.stdin).get("events", [])
+for name, count in sorted(Counter(
+    e["eventType"].replace("EVENT_TYPE_", "") for e in events
+).items()):
+    print(f"    {count:>2}x {name}")
+print()
+for e in events:
+    attrs = e.get("workflowTaskFailedEventAttributes")
+    if not attrs:
+        continue
+    print("    cause:  ", attrs.get("cause", "").replace("WORKFLOW_TASK_FAILED_CAUSE_", ""))
+    message = (attrs.get("failure") or {}).get("message", "")
+    print("    message:", message.strip().splitlines()[0][:110])
+    break
+'
+      echo
+      echo "  attempts so far: $($TC workflow describe -w "$wid" -o json 2>/dev/null \
+        | $PY -c 'import json,sys;print((json.load(sys.stdin).get("pendingWorkflowTask") or {}).get("attempt","?"))')"
+      echo
+      echo "  A real deploy of this would hang every affected Workflow. Nothing"
+      echo "  is lost, though -- fix the code, restart the Worker, and the task"
+      echo "  succeeds on its next retry. Here we just terminate it:"
+      $TC workflow terminate -w "$wid" --reason "broken-determinism demo" >/dev/null 2>&1
+      sleep 1
+      echo "  status:  $(wf_status "$wid")"
+      ;;
+
+    no-compensation)
+      bold "── variant: no-compensation (with worker --fail-shipping) ──"
+      start_worker --fail-shipping
+      local wid; wid=$(start_order "$name"); echo "started $wid"
+      sleep 16
+      $PY starter.py status "$wid"
+      echo
+      echo "compensations_run is empty: the customer has been charged and the"
+      echo "stock is still reserved, for an order that will never ship. Compare"
+      echo "with ./lab.sh compensation, which runs the default variant."
+      start_worker
+      ;;
+
+    no-retries)
+      bold "── variant: no-retries (with worker --flaky) ──"
+      start_worker --flaky
+      local wid; wid=$(start_order "$name"); echo "started $wid"
+      sleep 10
+      echo "  status: $(wf_status "$wid")"
+      $PY starter.py status "$wid" 2>/dev/null || true
+      echo
+      echo "maximum_attempts=1, so the first injected failure is terminal and the"
+      echo "Workflow fails immediately. The default variant would have retried"
+      echo "past it and completed -- same Activities, same failures, different"
+      echo "RetryPolicy."
+      start_worker
+      ;;
+
+    long-window)
+      bold "── variant: long-window ──"
+      local wid; wid=$(start_order "$name"); echo "started $wid"
+      sleep 6
+      $PY starter.py status "$wid"
+      echo
+      echo "This run is parked on a 30-DAY durable Timer. It costs nothing to"
+      echo "hold: no thread, no process, just a row server-side. Nothing in this"
+      echo "container is waiting on it, and it would survive every Worker here"
+      echo "being replaced."
+      echo
+      echo "  timer in the history:"
+      $TC workflow show -w "$wid" 2>/dev/null | grep -i "TimerStarted" | head -2
+      echo
+      echo "This is also why time-skipping tests matter -- see tests/, where the"
+      echo "same 30-day wait resolves instantly."
+      echo
+      echo "  cancelling it so it does not linger:"
+      $PY starter.py cancel "$wid" >/dev/null 2>&1
+      sleep 3
+      echo "  status: $(wf_status "$wid")"
+      ;;
+
+    default)
+      bold "── variant: default ──"
+      $PY starter.py start
+      ;;
+
+    *)
+      die "unknown variant: $name -- run ./lab.sh variants"
+      ;;
+  esac
+}
+
+# The at-least-once trap: an Activity that is not idempotent, plus retries.
+exp_double_charge() {
+  bold "── at-least-once: a non-idempotent Activity (worker --non-idempotent --flaky) ──"
+  start_worker --non-idempotent --flaky
+  local wid; wid=$(start_order); echo "started $wid"
+  $TC workflow result -w "$wid" >/dev/null 2>&1
+  echo
+  echo "the payment id records how many times the customer was charged:"
+  $PY starter.py status "$wid" 2>/dev/null | tr ',' '\n' | grep -i payment_id
+  echo
+  echo "  Temporal retried a failed Activity, as designed. The bug is in the"
+  echo "  Activity: it treated a retry as a new charge. Temporal guarantees"
+  echo "  at-LEAST-once, never exactly-once, so idempotency is your job."
+  echo
+  echo "  Worker log:"
+  grep -i "NON-IDEMPOTENT" "$RUN/worker.log" | tail -3
+  start_worker
+}
+
 exp_schedule() {
   bold "── schedules ──"
   $PY scheduling.py create
@@ -210,6 +343,10 @@ lab.sh -- drive every experiment in this repo
 
   the order saga (workflows.py)
     order                 happy path, start to finish
+    variants              list the selectable behaviours (no code editing)
+    variant <name>        run one: default | long-window | no-retries |
+                          no-compensation | broken-determinism
+    double-charge         a non-idempotent Activity meeting a retry
     signal-query          Signal vs Query, and how they differ in the history
     retries               injected transient failures and automatic retry
     compensation          non-retryable failure, saga rollback
@@ -260,6 +397,10 @@ case "${1:-}" in
   list)          require_server; $TC workflow list --limit 20 ;;
 
   replay-break)  require_server; exp_replay_break ;;
+
+  variants)      $PY starter.py start --list-variants ;;
+  variant)       require_server; exp_variant "${2:-}" ;;
+  double-charge) require_server; exp_double_charge ;;
   replay-save)   require_server; $PY replay_check.py save "${2:?workflow id required}" ;;
   replay-check)  $PY replay_check.py check ;;
 

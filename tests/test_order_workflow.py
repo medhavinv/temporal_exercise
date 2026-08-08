@@ -1,8 +1,8 @@
 """Workflow tests for the order saga.
 
 By default these run against a time-skipping test server: the 10-second
-cancellation window in OrderWorkflow costs no real wall-clock time. Change
-CANCELLATION_WINDOW to 30 days and these tests still finish in about a second.
+cancellation window costs no real wall-clock time. The `long-window` variant
+test below proves the point with a 30-day Timer.
 
     pytest -q
 
@@ -131,3 +131,51 @@ async def test_cancel_signal_during_window_triggers_compensation(env):
         assert "cancelled by customer" in result
         status = await handle.query(OrderWorkflow.status)
         assert status.compensations_run == ["release_inventory", "refund_payment"]
+
+
+async def test_long_window_variant_resolves_instantly_under_time_skipping(env):
+    """A 30-day Timer costs nothing to test -- if the server can skip time.
+
+    This is the single clearest argument for the time-skipping test server:
+    the `long-window` variant parks on a Timer 30 days out, and this test still
+    finishes in milliseconds. Against a real server there is nothing to do but
+    wait 30 days, so we skip.
+    """
+    if not env.supports_time_skipping:
+        pytest.skip(
+            "needs the time-skipping test server; this run is against a real one"
+        )
+
+    task_queue = f"tq-{uuid.uuid4()}"
+    async with worker_for(env, ship_ok, task_queue):
+        order = an_order()
+        order.variant = "long-window"
+        result = await env.client.execute_workflow(
+            OrderWorkflow.run,
+            order,
+            id=f"wf-{uuid.uuid4()}",
+            task_queue=task_queue,
+        )
+        assert result == "trk-1"
+
+
+async def test_no_compensation_variant_leaves_the_customer_charged(env):
+    """The saga is code you write, not something Temporal does for you."""
+    task_queue = f"tq-{uuid.uuid4()}"
+    async with worker_for(env, ship_boom, task_queue):
+        order = an_order()
+        order.variant = "no-compensation"
+        handle = await env.client.start_workflow(
+            OrderWorkflow.run,
+            order,
+            id=f"wf-{uuid.uuid4()}",
+            task_queue=task_queue,
+        )
+        with pytest.raises(WorkflowFailureError):
+            await handle.result()
+
+        status = await handle.query(OrderWorkflow.status)
+        assert status.variant == "no-compensation"
+        # Nothing was undone: payment taken, inventory still held.
+        assert status.compensations_run == []
+        assert status.payment_id is not None

@@ -87,6 +87,16 @@ Notes specific to Codespaces:
 - When you start the server, Codespaces will prompt to forward port 8233 —
   use that forwarded URL for the Web UI instead of `localhost:8233`.
 
+Start terminals 1 and 2 (see below) with:
+
+```bash
+# terminal 1
+~/.temporalio/bin/temporal server start-dev --db-filename temporal.db
+
+# terminal 2
+.venv/bin/python worker.py
+```
+
 ### Option B — local machine
 
 ```bash

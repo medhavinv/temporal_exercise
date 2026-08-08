@@ -91,34 +91,34 @@ Every entry is runnable: `./lab.sh <command>`. The **Exp.** column is the
 experiment that covers it, so you can jump straight to whichever concept you
 came for — or find out which experiment you have already done.
 
-| Concept | Exp. | Command | Where it lives |
-|---|---|---|---|
-| Workflows, Activities, Task Queues | [0](#0-a-run-end-to-end) | `order` | `workflows.py`, `activities.py` |
-| **Event History** | [1](#1-read-the-event-history) | `history` | read it in the Web UI too |
-| Crash durability | [2a](#2-break-things-on-purpose) | `crash` | the flagship demo |
-| **Durable Timers** | [2a](#2-break-things-on-purpose) | `crash` | `wait_condition(timeout=…)` |
-| Retries & backoff | [2b](#2-break-things-on-purpose) | `retries` | `RetryPolicy` |
-| Saga / compensation | [2c](#2-break-things-on-purpose) | `compensation` | `OrderWorkflow._compensate` |
-| **Signal** | [2d](#2-break-things-on-purpose) | `signal-query` | `@workflow.signal` |
-| **Query** | [2d](#2-break-things-on-purpose) | `signal-query` | `@workflow.query` |
-| **Replay** & non-determinism | [3](#3-break-determinism) | `replay-break` | `replay_break.py` |
-| The Workflow sandbox | [3](#3-break-determinism) | `variant broken-determinism` | `variants.py` |
-| Time-skipping tests, mocked Activities | [4](#4-tests-that-skip-time) | `test` | `tests/` |
-| Replay tests for CI | [4](#4-tests-that-skip-time) | `replay-check` | `replay_check.py` |
-| Idempotency / at-least-once | [5](#5-pick-it-apart-yourself) | `double-charge` | `charge_payment` |
-| Retry policy tuning | [5](#5-pick-it-apart-yourself) | `variant no-retries` | `variants.py` |
-| **Update** + validator | [5](#5-pick-it-apart-yourself) | `update` | `CounterWorkflow` |
-| **Child Workflows** | [5](#5-pick-it-apart-yourself) | `child` | `ParentWorkflow` |
-| **Continue-As-New** | [5](#5-pick-it-apart-yourself) | `continue-as-new` | `CounterWorkflow` |
-| Deterministic `now`/`uuid4`/`random` | [6](#6-one-concept-at-a-time-new) | `determinism` | `DeterminismWorkflow` |
-| **Cancellation** + cleanup | [6](#6-one-concept-at-a-time-new) | `cancellation` | `CancellationWorkflow` |
-| Heartbeats | [6](#6-one-concept-at-a-time-new) | `cancellation` | `activity.heartbeat` |
-| Local Activities | [6](#6-one-concept-at-a-time-new) | `local-activity` | `LocalActivityWorkflow` |
-| **Versioning** (`patched`) | [6](#6-one-concept-at-a-time-new) | `versioning` | `VersionedWorkflow` |
-| Search Attributes, Memos, Visibility | [6](#6-one-concept-at-a-time-new) | `searchable` | `SearchableWorkflow` |
-| **Schedules** (pause, trigger, backfill) | [6](#6-one-concept-at-a-time-new) | `schedule` | `scheduling.py` |
-| Start Delay | [6](#6-one-concept-at-a-time-new) | `schedule-delay` | `scheduling.py` |
-| Cron (legacy) | [6](#6-one-concept-at-a-time-new) | `schedule-cron` | `scheduling.py` |
+| Concept | What it is | Exp. | Command | Code |
+|---|---|---|---|---|
+| Workflows, Activities, Task Queues | Orchestration code, its side-effecting steps, and the queue Workers poll for both | [0](#0-a-run-end-to-end) | `order` | `workflows.py`, `activities.py` |
+| **Event History** | The append-only log of everything that happened to a Workflow, viewable in the Web UI | [1](#1-read-the-event-history) | `history` | read it in the Web UI too |
+| Crash durability | Temporal resumes a Workflow after the Worker running it dies | [2a](#2-break-things-on-purpose) | `crash` | the flagship demo |
+| **Durable Timers** | Sleeps that live server-side, so they outlast any Worker | [2a](#2-break-things-on-purpose) | `crash` | `wait_condition(timeout=…)` |
+| Retries & backoff | Failed Activities are re-run automatically with growing delays | [2b](#2-break-things-on-purpose) | `retries` | `RetryPolicy` |
+| Saga / compensation | Undo steps you write yourself to roll back a half-finished Workflow | [2c](#2-break-things-on-purpose) | `compensation` | `OrderWorkflow._compensate` |
+| **Signal** | A fire-and-forget message that changes a running Workflow's state | [2d](#2-break-things-on-purpose) | `signal-query` | `@workflow.signal` |
+| **Query** | A synchronous read of a running Workflow's state; never mutates it | [2d](#2-break-things-on-purpose) | `signal-query` | `@workflow.query` |
+| **Replay** & non-determinism | Re-running your code against recorded history, which must produce identical decisions | [3](#3-break-determinism) | `replay-break` | `replay_break.py` |
+| The Workflow sandbox | A runtime guard that blocks nondeterministic calls inside Workflow code | [3](#3-break-determinism) | `variant broken-determinism` | `variants.py` |
+| Time-skipping tests | A test server that fast-forwards Timers, so a 30-day wait runs instantly | [4](#4-tests-that-skip-time) | `test` | `tests/` |
+| Replay tests for CI | Replaying saved histories against new code to catch breaking changes before deploy | [4](#4-tests-that-skip-time) | `replay-check` | `replay_check.py` |
+| Idempotency / at-least-once | Activities can run more than once, so repeating one must be harmless | [5](#5-pick-it-apart-yourself) | `double-charge` | `charge_payment` |
+| Retry policy tuning | Attempt limits and backoff, configured per Activity | [5](#5-pick-it-apart-yourself) | `variant no-retries` | `variants.py` |
+| **Update** + validator | A message that changes state *and* returns a value, and can be rejected before it lands | [5](#5-pick-it-apart-yourself) | `update` | `CounterWorkflow` |
+| **Child Workflows** | A Workflow started and awaited by another, with its own ID and history | [5](#5-pick-it-apart-yourself) | `child` | `ParentWorkflow` |
+| **Continue-As-New** | Restart a Workflow with an empty history, keeping its ID and carrying state forward | [5](#5-pick-it-apart-yourself) | `continue-as-new` | `CounterWorkflow` |
+| Deterministic `now`/`uuid4`/`random` | SDK replacements for the clock and randomness that return the same values on replay | [6](#6-one-concept-at-a-time-new) | `determinism` | `DeterminismWorkflow` |
+| **Cancellation** + cleanup | Stopping a Workflow while still letting its cleanup run | [6](#6-one-concept-at-a-time-new) | `cancellation` | `CancellationWorkflow` |
+| Heartbeats | Progress pings that let Temporal notice a dead Activity quickly | [6](#6-one-concept-at-a-time-new) | `cancellation` | `activity.heartbeat` |
+| Local Activities | Short Activities run inside the Worker, skipping the Task Queue round trip | [6](#6-one-concept-at-a-time-new) | `local-activity` | `LocalActivityWorkflow` |
+| **Versioning** (`patched`) | Changing Workflow code without breaking runs already in flight | [6](#6-one-concept-at-a-time-new) | `versioning` | `VersionedWorkflow` |
+| Search Attributes, Memos, Visibility | Indexed fields that let you find Workflows without knowing their IDs | [6](#6-one-concept-at-a-time-new) | `searchable` | `SearchableWorkflow` |
+| **Schedules** | First-class recurring runs you can pause, trigger early, and backfill | [6](#6-one-concept-at-a-time-new) | `schedule` | `scheduling.py` |
+| Start Delay | Run a Workflow once, later | [6](#6-one-concept-at-a-time-new) | `schedule-delay` | `scheduling.py` |
+| Cron (legacy) | Older recurring execution set on the Workflow; cannot pause or backfill | [6](#6-one-concept-at-a-time-new) | `schedule-cron` | `scheduling.py` |
 
 Not covered, deliberately: Nexus, multi-cluster replication, custom Data
 Converters and payload encryption, interceptors, and Worker Versioning

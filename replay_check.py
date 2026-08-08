@@ -26,21 +26,33 @@ from workflows import OrderWorkflow
 HISTORY_DIR = pathlib.Path(__file__).parent / "histories"
 
 
-async def save(workflow_id: str) -> None:
+async def save(workflow_id: str, directory: str | None = None) -> None:
     client = await Client.connect("localhost:7233")
     handle = client.get_workflow_handle(workflow_id)
     history = await handle.fetch_history()
 
-    HISTORY_DIR.mkdir(exist_ok=True)
-    path = HISTORY_DIR / f"{workflow_id}.json"
+    target_dir = pathlib.Path(directory) if directory else HISTORY_DIR
+    target_dir.mkdir(parents=True, exist_ok=True)
+    path = target_dir / f"{workflow_id}.json"
     path.write_text(json.dumps(history.to_json_dict(), indent=2))
     print(f"wrote {path}")
 
 
-async def check() -> None:
-    paths = sorted(HISTORY_DIR.glob("*.json"))
+async def check(target: str | None = None) -> None:
+    """Replay one history file, or every history in a directory.
+
+    Note that histories accumulate across code changes. A history recorded by
+    an older version of your Workflow *should* fail here -- that is the check
+    doing its job, not a broken file.
+    """
+    location = pathlib.Path(target) if target else HISTORY_DIR
+    if location.is_file():
+        paths = [location]
+    else:
+        paths = sorted(location.glob("*.json"))
+
     if not paths:
-        print(f"no histories in {HISTORY_DIR} -- run 'save <workflow-id>' first")
+        print(f"no histories in {location} -- run 'save <workflow-id>' first")
         return
 
     replayer = Replayer(workflows=[OrderWorkflow])
@@ -56,13 +68,17 @@ def main() -> None:
     sub = parser.add_subparsers(dest="command", required=True)
     p_save = sub.add_parser("save")
     p_save.add_argument("workflow_id")
-    sub.add_parser("check")
+    p_save.add_argument("--dir", default=None, help="where to write the history")
+    p_check = sub.add_parser("check")
+    p_check.add_argument(
+        "target", nargs="?", default=None, help="a history file or a directory"
+    )
 
     args = parser.parse_args()
     if args.command == "save":
-        asyncio.run(save(args.workflow_id))
+        asyncio.run(save(args.workflow_id, args.dir))
     else:
-        asyncio.run(check())
+        asyncio.run(check(args.target))
 
 
 if __name__ == "__main__":

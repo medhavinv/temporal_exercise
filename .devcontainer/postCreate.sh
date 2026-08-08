@@ -1,16 +1,30 @@
 #!/usr/bin/env bash
+# Runs once when the Codespace / dev container is created.
 set -euo pipefail
 
-# Temporal CLI (bundles the dev server + Web UI)
-curl -sSf https://temporal.download/cli.sh | sh
-echo 'export PATH="$HOME/.temporalio/bin:$PATH"' >> "$HOME/.bashrc"
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-# Python deps
+echo "== python environment =="
 python3 -m venv .venv
-.venv/bin/pip install --upgrade pip
-.venv/bin/pip install -r requirements.txt
+.venv/bin/pip install --quiet --upgrade pip
+.venv/bin/pip install --quiet -r requirements.txt
+echo "   installed: $(.venv/bin/python -c 'import temporalio; print("temporalio", temporalio.__version__ if hasattr(temporalio,"__version__") else "")')"
 
-echo ""
-echo "Setup complete. Two terminals from here:"
-echo "  1) ~/.temporalio/bin/temporal server start-dev --db-filename temporal.db"
-echo "  2) .venv/bin/python worker.py"
+echo
+echo "== temporal cli =="
+chmod +x lab.sh bootstrap_server.sh
+./bootstrap_server.sh
+
+cat <<'DONE'
+
+════════════════════════════════════════════════════════════════════
+  Ready. Two commands to start:
+
+    ./lab.sh up          start the Temporal server and a Worker
+    ./lab.sh             list every experiment
+
+  Then open the forwarded port 8233 ("Temporal Web UI") from the
+  PORTS tab. Reading the Event History there is the whole point --
+  see Experiment 1 in the README.
+════════════════════════════════════════════════════════════════════
+DONE

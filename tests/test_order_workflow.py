@@ -1,12 +1,13 @@
-"""Workflow tests against a time-skipping test server.
+"""Workflow tests for the order saga.
 
-The test environment fast-forwards Timers: the 10-second cancellation window in
-OrderWorkflow costs no real wall-clock time here. Change CANCELLATION_WINDOW to
-30 days and these tests still run in under a second.
+By default these run against a time-skipping test server: the 10-second
+cancellation window in OrderWorkflow costs no real wall-clock time. Change
+CANCELLATION_WINDOW to 30 days and these tests still finish in about a second.
 
     pytest -q
 
-The first run downloads a test-server binary, so it needs network access once.
+See tests/conftest.py for how to run them against an already-running server
+instead, when the test-server download is unavailable.
 """
 
 import asyncio
@@ -21,8 +22,6 @@ from temporalio.worker import Worker
 from shared import OrderInput
 from workflows import OrderWorkflow
 
-pytestmark = pytest.mark.asyncio
-
 
 def an_order() -> OrderInput:
     return OrderInput(
@@ -34,7 +33,8 @@ def an_order() -> OrderInput:
 
 
 # Activities are mocked by name, so the Workflow logic is tested in isolation
-# from whatever the real implementations do.
+# from whatever the real implementations do. This is the standard way to test
+# Workflows: the orchestration is the unit under test, not the side effects.
 
 
 @activity.defn(name="charge_payment")
@@ -76,68 +76,58 @@ def worker_for(env: WorkflowEnvironment, ship, task_queue: str) -> Worker:
     )
 
 
-async def test_happy_path_ships_and_returns_tracking_number():
-    async with await WorkflowEnvironment.start_time_skipping() as env:
-        tq = f"tq-{uuid.uuid4()}"
-        async with worker_for(env, ship_ok, tq):
-            result = await env.client.execute_workflow(
-                OrderWorkflow.run,
-                an_order(),
-                id=f"wf-{uuid.uuid4()}",
-                task_queue=tq,
-            )
-            assert result == "trk-1"
+async def test_happy_path_ships_and_returns_tracking_number(env):
+    task_queue = f"tq-{uuid.uuid4()}"
+    async with worker_for(env, ship_ok, task_queue):
+        result = await env.client.execute_workflow(
+            OrderWorkflow.run,
+            an_order(),
+            id=f"wf-{uuid.uuid4()}",
+            task_queue=task_queue,
+        )
+        assert result == "trk-1"
 
 
-async def test_shipping_failure_rolls_back_payment_and_inventory():
-    async with await WorkflowEnvironment.start_time_skipping() as env:
-        tq = f"tq-{uuid.uuid4()}"
-        async with worker_for(env, ship_boom, tq):
-            handle = await env.client.start_workflow(
-                OrderWorkflow.run,
-                an_order(),
-                id=f"wf-{uuid.uuid4()}",
-                task_queue=tq,
-            )
-            with pytest.raises(WorkflowFailureError):
-                await handle.result()
+async def test_shipping_failure_rolls_back_payment_and_inventory(env):
+    task_queue = f"tq-{uuid.uuid4()}"
+    async with worker_for(env, ship_boom, task_queue):
+        handle = await env.client.start_workflow(
+            OrderWorkflow.run,
+            an_order(),
+            id=f"wf-{uuid.uuid4()}",
+            task_queue=task_queue,
+        )
+        with pytest.raises(WorkflowFailureError):
+            await handle.result()
 
+        status = await handle.query(OrderWorkflow.status)
+        assert status.stage == "failed"
+        assert status.compensations_run == ["release_inventory", "refund_payment"]
+
+
+async def test_cancel_signal_during_window_triggers_compensation(env):
+    task_queue = f"tq-{uuid.uuid4()}"
+    async with worker_for(env, ship_ok, task_queue):
+        handle = await env.client.start_workflow(
+            OrderWorkflow.run,
+            an_order(),
+            id=f"wf-{uuid.uuid4()}",
+            task_queue=task_queue,
+        )
+
+        # Wait until the Workflow is actually sitting in the window before
+        # signalling, so the test does not race the Workflow.
+        for _ in range(100):
             status = await handle.query(OrderWorkflow.status)
-            assert status.stage == "failed"
-            assert status.compensations_run == [
-                "release_inventory",
-                "refund_payment",
-            ]
+            if status.stage == "awaiting_cancellation_window":
+                break
+            await asyncio.sleep(0.05)
+        else:
+            pytest.fail("workflow never reached the cancellation window")
 
+        await handle.signal(OrderWorkflow.cancel)
+        result = await handle.result()
 
-async def test_cancel_signal_during_window_triggers_compensation():
-    async with await WorkflowEnvironment.start_time_skipping() as env:
-        tq = f"tq-{uuid.uuid4()}"
-        async with worker_for(env, ship_ok, tq):
-            handle = await env.client.start_workflow(
-                OrderWorkflow.run,
-                an_order(),
-                id=f"wf-{uuid.uuid4()}",
-                task_queue=tq,
-            )
-
-            # Wait until the Workflow is actually sitting in the window before
-            # signalling, so the test does not race the Workflow.
-            for _ in range(100):
-                if (
-                    await handle.query(OrderWorkflow.status)
-                ).stage == "awaiting_cancellation_window":
-                    break
-                await asyncio.sleep(0.05)
-            else:
-                pytest.fail("workflow never reached the cancellation window")
-
-            await handle.signal(OrderWorkflow.cancel)
-            result = await handle.result()
-
-            assert "cancelled by customer" in result
-            status = await handle.query(OrderWorkflow.status)
-            assert status.compensations_run == [
-                "release_inventory",
-                "refund_payment",
-            ]
+        assert "cancelled by customer" in result
+        status = await handle.query(OrderWorkflow.status)
+        assert status.compensations_run == ["release_inventory", "refund_payment"]

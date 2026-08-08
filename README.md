@@ -1,25 +1,56 @@
 # Learning Temporal by breaking it
 
-A small order-fulfillment saga in Python, built to be *interfered with*. Reading
-about durable execution doesn't stick; killing a Worker mid-Workflow and
-watching the Workflow resume does.
+A self-hosted Temporal lab you can run in a Codespace. An order-fulfillment
+saga plus one small Workflow per concept, wired to a single driver script so
+each idea is one command away.
 
-Work through the experiments in order. Budget about two hours.
+Reading about durable execution doesn't stick. Killing a Worker mid-Workflow
+and watching the Workflow resume does.
+
+---
+
+## Start here (GitHub Codespaces)
+
+Open this repo in a Codespace. The container builds itself: Python deps, and a
+Temporal CLI that embeds a complete server. Then:
+
+```bash
+./lab.sh up      # starts the Temporal server and a Worker
+./lab.sh         # lists every experiment
+```
+
+Open the **PORTS** tab and click the forwarded port **8233** — that's the
+Temporal Web UI in your browser. Keep it open; half the value of this repo is
+reading Event Histories there while the experiments run.
+
+<details>
+<summary>Running locally instead</summary>
+
+```bash
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+./bootstrap_server.sh    # gets a Temporal CLI into ./bin
+./lab.sh up
+```
+
+`bootstrap_server.sh` tries the official installer first and falls back to
+building the CLI from the Go module proxy, which is the path that works in
+sandboxes where `temporal.download` and `github.com` are blocked.
+</details>
 
 ---
 
 ## The one idea
 
 Temporal is **durable execution**. Your Workflow function's progress is
-persisted as an **Event History**, so it survives process crashes, deploys, and
-machine loss. It resumes by **replaying** that history through your code to
-rebuild in-memory state, then continues from where it stopped.
+persisted as an **Event History**, so it survives crashes, deploys, and machine
+loss. It resumes by **replaying** that history through your code to rebuild
+in-memory state, then continues from where it stopped.
 
-Two consequences explain nearly every rule you'll hit:
+Two consequences explain nearly every rule you will hit:
 
 1. **Workflow code must be deterministic.** Same history in, same decisions out.
-   No `datetime.now()`, no `random`, no I/O, no `asyncio.sleep`. The SDK
-   provides deterministic replacements (`workflow.now()`, `workflow.sleep()`).
+   No `datetime.now()`, no `random`, no I/O, no `asyncio.sleep`. The SDK gives
+   you deterministic replacements.
 2. **Activities hold everything else.** They're retried automatically and are
    *at-least-once*, so they must be idempotent.
 
@@ -29,8 +60,8 @@ Your side:
 
 | Component | What it is |
 |---|---|
-| **Client** (`starter.py`) | Starts Workflows, sends Signals, runs Queries. |
-| **Worker** (`worker.py`) | *Your* process, running *your* code. Long-polls a Task Queue. Temporal never executes your code — it hands out tasks and stores results. |
+| **Client** (`starter.py`) | Starts Workflows, sends Signals, runs Queries, Updates. |
+| **Worker** (`worker.py`) | *Your* process running *your* code, long-polling a Task Queue. Temporal never executes your code — it hands out tasks and stores results. |
 
 Temporal Service side — four independently scalable roles:
 
@@ -49,330 +80,195 @@ client → Frontend → History appends WorkflowExecutionStarted
        → Matching → your Worker polls a WORKFLOW TASK
        → SDK replays history → your code returns COMMANDS ("schedule activity X")
        → History persists them → Matching → Worker runs the ACTIVITY TASK
-       → result appended to history → next Workflow Task → ...
+       → result appended → next Workflow Task → ...
 ```
 
-## The files
+---
 
-| File | Read it for | What it does |
+## Concept coverage
+
+Every entry is runnable. `./lab.sh <command>`.
+
+| Concept | Command | Where it lives |
 |---|---|---|
-| `workflows.py` | Deterministic orchestration: the saga, a durable Timer, a Signal, a Query. **Start here.** | Defines `OrderWorkflow`, the state machine driving the order saga: charge payment, reserve inventory, wait out a cancellable Timer window, ship, and compensate (release inventory, refund payment) on cancellation or shipping failure. Exposes a `cancel` Signal and a `status` Query. |
-| `activities.py` | The side-effecting half, plus injectable failures and compensations. | Implements the Activities the Workflow calls: `charge_payment`, `reserve_inventory`, `ship_order` (with heartbeats), and their compensations `refund_payment` / `release_inventory`. Reads `FLAKY_ACTIVITIES` and `FAIL_SHIPPING` env vars to inject transient and non-retryable failures on demand. |
-| `worker.py` | Wiring code and Task Queue registration. | Connects to the local Temporal Service, registers `OrderWorkflow` and `ALL_ACTIVITIES` on the `orders` Task Queue, and long-polls for work until killed. |
-| `starter.py` | Starting, querying, and signalling from outside. | CLI (`start`, `status`, `cancel`) that talks to the Temporal Service as a Client: starts a new `OrderWorkflow` run, queries a running Workflow's status, or sends it a cancel Signal. |
-| `shared.py` | Types and constants shared across the Worker/Client boundary. | Defines the `TASK_QUEUE` constant and the `OrderInput` / `OrderStatus` dataclasses used as Workflow input and Query output; kept plain since anything crossing the boundary gets serialized. |
-| `replay_check.py` | The pre-deploy determinism check. | CLI (`save`, `check`) that fetches and saves a completed Workflow's Event History to `histories/`, then replays saved histories against the current `workflows.py` to catch non-deterministic code changes before deploy. |
-| `tests/test_order_workflow.py` | Time-skipping tests with mocked Activities. | Pytest suite covering the happy path, shipping-failure compensation, and cancel-Signal compensation, run against a time-skipping test server with Activities mocked by name. |
-| `pytest.ini` | Test runner configuration. | Points pytest at the `tests/` directory, adds the repo root to `pythonpath`, and enables `asyncio_mode = auto` for the async test functions. |
-| `requirements.txt` | Python dependencies. | Pins `temporalio`, `pytest`, and `pytest-asyncio` versions needed to run the Worker, Client, and test suite. |
-| `WORKFLOW_MAP.md` | Diagrams: which Workflow calls which Activity, for which use case. | Reference diagrams of the saga's call graph — useful alongside `workflows.py` when tracing which Activity a given step invokes. |
+| Workflows, Activities, Task Queues | `order` | `workflows.py`, `activities.py` |
+| **Event History** | `history` | read it in the Web UI too |
+| **Replay** | `replay-break` | `replay_break.py` |
+| **Durable Timers** | `crash` | `wait_condition(timeout=…)` |
+| **Signal** | `signal-query` | `@workflow.signal` |
+| **Query** | `signal-query` | `@workflow.query` |
+| **Update** + validator | `update` | `CounterWorkflow` |
+| Retries & backoff | `retries` | `RetryPolicy` |
+| Heartbeats | `cancellation` | `activity.heartbeat` |
+| Saga / compensation | `compensation` | `OrderWorkflow._compensate` |
+| Crash durability | `crash` | the flagship demo |
+| **Child Workflows** | `child` | `ParentWorkflow` |
+| **Continue-As-New** | `continue-as-new` | `CounterWorkflow` |
+| **Cancellation** + cleanup | `cancellation` | `CancellationWorkflow` |
+| Deterministic `now`/`uuid4`/`random` | `determinism` | `DeterminismWorkflow` |
+| Local Activities | `local-activity` | `LocalActivityWorkflow` |
+| **Versioning** (`patched`) | `versioning` | `VersionedWorkflow` |
+| Search Attributes, Memos, Visibility | `searchable` | `SearchableWorkflow` |
+| **Schedules** (pause, trigger, backfill) | `schedule` | `scheduling.py` |
+| Start Delay | `schedule-delay` | `scheduling.py` |
+| Cron (legacy) | `schedule-cron` | `scheduling.py` |
+| Time-skipping tests, mocked Activities | `test` | `tests/` |
+| Replay tests for CI | `replay-check` | `replay_check.py` |
+
+Not covered, deliberately: Nexus, multi-cluster replication, custom Data
+Converters and payload encryption, interceptors, and Worker Versioning
+(the heavier successor to `patched`). Each is a topic on its own once the
+above is comfortable.
 
 ---
 
-## Setup
+## The experiments, in order
 
-### Option A — GitHub Codespaces
-
-This repo has a `.devcontainer` config. Open it with **Code → Create codespace
-on main** and wait for the postCreate script to finish — it installs the
-Temporal CLI and Python deps for you, so there's nothing left to set up
-manually. Then skip straight to the terminal steps below.
-
-Notes specific to Codespaces:
-
-- `temporal` is added to `PATH` via `.bashrc`, but that only takes effect in
-  *new* terminals opened after setup finishes. If a terminal reports
-  `command not found`, either open a fresh terminal or use the full path:
-  `~/.temporalio/bin/temporal`.
-- When you start the server, Codespaces will prompt to forward port 8233 —
-  use that forwarded URL for the Web UI instead of `localhost:8233`.
-
-Start terminals 1 and 2 (see below) with:
+### 0. A run, end to end
 
 ```bash
-# terminal 1
-~/.temporalio/bin/temporal server start-dev --db-filename temporal.db
-
-# terminal 2
-.venv/bin/python worker.py
+./lab.sh order
 ```
 
-### Option B — local machine
+### 1. Read the Event History
 
-```bash
-# 1. Temporal CLI (server + Web UI in one binary)
-curl -sSf https://temporal.download/cli.sh | sh    # or: brew install temporal
-
-# 2. Python deps
-python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-```
-
-### Three terminals from here on — the experiments below refer to them by number
-
-```bash
-# terminal 1 — the Temporal Service. --db-filename makes it survive restarts.
-temporal server start-dev --db-filename temporal.db
-
-# terminal 2 — your Worker
-.venv/bin/python worker.py
-
-# terminal 3 — the Client, used to start/query/signal Workflows (kept idle for now)
-```
-
-Server on `localhost:7233`. Open the Web UI now, at <http://localhost:8233>
-(in Codespaces, use the forwarded-port URL instead of `localhost`), and keep
-the tab open — you'll come back to it throughout the experiments below to
-watch runs and inspect Event Histories.
-
----
-
-## Experiment 0 — a run, end to end
-
-With the Worker still running in terminal 2, go to terminal 3 and run:
-
-```bash
-.venv/bin/python starter.py start
-```
-
-It prints a Workflow ID and a UI link like
-`http://localhost:8233/namespaces/default/workflows/order-xxxxxxxx` — open
-that link in your browser now. Watch it while the command runs: it waits ~10
-seconds in the cancellation window, ships, and returns a tracking number in
-the terminal at the same moment the UI marks the run **Completed**.
-
-## Experiment 1 — read the Event History
-
-**This is the highest-value step in the whole exercise.** In the browser tab
-you opened above (or `http://localhost:8233`, click into your most recent
-`OrderWorkflow` run), click the **"Event History"** / **"History"** tab (or
-"Details" > "History", depending on CLI version) and expand it. You should
-see a numbered list of events like `WorkflowExecutionStarted`,
-`ActivityTaskScheduled`, `ActivityTaskCompleted`, etc. — click each one to
-expand its payload. Then, with `workflows.py` open side by side, map every
-event back to a line of code:
+**The highest-value step in the whole repo.** Open the run in the Web UI (port
+8233), expand the history, and map every event to a line of `workflows.py`:
 
 - `WorkflowExecutionStarted` — your `start_workflow` call.
-- `WorkflowTaskScheduled` / `Started` / `Completed` — one *slice* of your
-  Workflow code executing. There are several; find where each one begins and
-  ends in the source.
+- `WorkflowTaskScheduled/Started/Completed` — one *slice* of your Workflow code
+  executing. There are several. Find where each begins and ends in the source.
 - `ActivityTaskScheduled` — the Command your code emitted at
-  `execute_activity`. Note it's *scheduled*, not called: your Workflow only
-  ever asks the Service to do things.
-- `ActivityTaskStarted` / `Completed` — a Worker actually ran it. The result
-  payload is right there in the event.
-- `TimerStarted` / `TimerFired` — your `wait_condition` timeout.
-- `WorkflowExecutionCompleted` — the return value.
+  `execute_activity`. Note *scheduled*, not called: your Workflow only ever
+  asks the Service to do things.
+- `ActivityTaskStarted/Completed` — a Worker actually ran it.
+- `TimerStarted/TimerFired` — your `wait_condition` timeout.
 
-Ask yourself: *if I deleted my Worker process and its memory entirely, could I
-rebuild `self._payment_id` from this list alone?* That's replay.
+Ask: *if I deleted my Worker and all its memory, could I rebuild
+`self._payment_id` from this list alone?* That's replay.
 
-## Experiment 2 — break things on purpose
-
-You'll be starting and stopping the Worker (terminal 2) a lot in this
-section. "Restart the Worker" always means: go to terminal 2, `ctrl-c` to
-stop it if it's running, then run `.venv/bin/python worker.py` again — it
-reconnects to the same Task Queue (`orders`) and immediately starts picking
-up any Workflow that's waiting for it.
-
-**2a. Kill the Worker mid-flight.**
-
-In terminal 3 (Client):
+### 2. Break things on purpose
 
 ```bash
-.venv/bin/python starter.py start --no-wait
+./lab.sh crash          # kill the Worker mid-run; watch it resume
+./lab.sh retries        # injected failures and automatic retry
+./lab.sh compensation   # non-retryable failure, saga rollback
+./lab.sh signal-query   # Signal vs Query, and how they differ in the history
 ```
 
-Copy the Workflow ID it prints. **Immediately** switch to terminal 2 and hit
-`ctrl-c` to kill the Worker — do this within a few seconds, before it gets to
-the shipping step. The Workflow is now mid-run with nothing to execute it.
-Confirm that in terminal 3:
+`crash` is the one that matters. The Workflow stays `RUNNING` with no Worker
+alive at all, its 10-second Timer fires while nothing of yours is running, and
+when a Worker returns it finishes. **You wrote no recovery code.**
+
+`retries` contains a genuine surprise: **retries produce no events**. There is
+no `ActivityTaskFailed` for a retried-then-successful Activity. Temporal records
+`ActivityTaskScheduled` once, then only the *terminal* attempt — the one that
+finally succeeds, or the last one if retries are exhausted — as a single
+`ActivityTaskStarted` / `ActivityTaskCompleted` pair. Attempts in between live
+in the Service's mutable state, not the history.
+
+So the history of a flaky Activity is as compact as a clean one. The giveaway
+is the `attempt` counter on `ActivityTaskStarted` reading `3` instead of `1`,
+plus its `lastFailure` field. To *watch* retries happen rather than infer them,
+tail the Worker log (`.run/worker.log`): each failed attempt is logged there
+with its traceback and a growing backoff between them.
+
+### 3. Break determinism
 
 ```bash
-.venv/bin/python starter.py status <workflow-id>
+./lab.sh replay-break
 ```
 
-This command hangs or errors — Queries need a live Worker to answer them.
-Now open the Workflow in the Web UI (`http://localhost:8233`, find it by
-Workflow ID) and check the status badge: it still shows **Running**, even
-though nothing is polling for it. That's the proof the state lives in the
-Service, not in your process.
+Records a fresh run, replays it against the real code (passes), then against a
+copy with two Activities swapped (fails with a non-determinism error). It works
+on an in-memory copy, so `workflows.py` is never modified.
 
-Now go back to terminal 2 and restart the Worker (`.venv/bin/python
-worker.py`). Watch the UI: within a second or two the run's status flips to
-**Completed**, and terminal 3 (if you re-run the `status` command) answers
-again. **Nothing was lost and you wrote no recovery code.** That's the entire
-product in one demo.
+For the sandbox check, uncomment the `EXPERIMENT 3` block in `workflows.py` and
+run `./lab.sh order` — `datetime.now()` is rejected before it can do damage.
 
-Now repeat it, but kill the Worker while the run is in the 10-second
-cancellation window (start a fresh run in terminal 3, `ctrl-c` the Worker in
-terminal 2 immediately after), and this time leave the Worker down for a
-full minute before restarting it. Watch the UI's history tab for that run:
-the `TimerFired` event's timestamp lands ~10 seconds after `TimerStarted`,
-not a minute later — the Timer fired on schedule inside the Service even
-though no Worker was around to see it.
-
-**2b. Watch retries.** Restart the Worker (terminal 2, `ctrl-c` then), this
-time setting the flaky-activities flag:
+### 4. One concept at a time
 
 ```bash
-FLAKY_ACTIVITIES=1 .venv/bin/python worker.py
+./lab.sh update            # Update + validator vs Signal vs Query
+./lab.sh continue-as-new   # roll over a long history, keeping the Workflow ID
+./lab.sh child             # Child Workflows in parallel
+./lab.sh cancellation      # real cancellation + shielded cleanup
+./lab.sh determinism       # workflow.now / uuid4 / random
+./lab.sh local-activity    # the marker instead of the scheduled/started pair
+./lab.sh versioning        # workflow.patched() for in-flight deploys
+./lab.sh searchable        # Search Attributes, Memos, Visibility queries
+./lab.sh schedule          # create, describe, trigger, pause, backfill, delete
 ```
 
-In terminal 3, start a new run (`.venv/bin/python starter.py start`) and
-watch terminal 2 — the Worker logs each failed attempt (`Completing activity
-as failed`, with a traceback and an incrementing `attempt` number) as the SDK
-retries per the `RetryPolicy` in `workflows.py`, with the delay between
-attempts growing each time (the backoff).
+Read each Workflow in `concepts.py` before running its command — they're small
+and the comments carry the reasoning.
 
-Don't expect to see this in the Event History, though. Temporal doesn't write
-a history event for every failed retry — it only records `ActivityTaskScheduled`
-once, then whichever attempt is *terminal* (the one that finally succeeds, or
-the last one if retries are exhausted) as a single `ActivityTaskStarted` /
-`ActivityTaskCompleted` pair. The giveaway that retries happened at all is the
-`Attempt` field on that `ActivityTaskStarted` event — it'll read `2`, `3`, etc.
-instead of `1`, with no earlier attempts visible in between. So: the *log* is
-where you watch retries happen; the *history* only shows you the outcome.
-Note the *Workflow* history has no failure in it at the top level either way;
-your Workflow code never saw the error, only the eventual success.
-
-**2c. Watch the saga compensate.** Restart the Worker again (terminal 2,
-`ctrl-c` then):
+### 5. Tests
 
 ```bash
-FAIL_SHIPPING=1 .venv/bin/python worker.py
+./lab.sh test
 ```
 
-In terminal 3, start a new run. This time `ship_order` raises a
-non-retryable `ApplicationError`, so there's no retry loop; instead the
-Workflow catches it and runs `release_inventory` then `refund_payment`, in
-that reverse order, before failing. Watch this happen in the UI's Event
-History: you'll see `ActivityTaskScheduled`/`Completed` pairs for
-`release_inventory` and `refund_payment` appear *after* the `ship_order`
-failure, then a final `WorkflowExecutionFailed`. Open this run and the 2b run
-side by side (two browser tabs) and compare: 2b's failure was invisible to
-your code, 2c's surfaced and drove new Activity calls.
-
-**2d. Signals and Queries.** Restart the Worker with no env vars
-(`.venv/bin/python worker.py` in terminal 2), then in terminal 3:
-
-```bash
-.venv/bin/python starter.py start --no-wait
-```
-
-Copy the Workflow ID, and *within* the 10-second window run both of these in
-terminal 3:
-
-```bash
-.venv/bin/python starter.py status <workflow-id>   # Query — a synchronous read
-.venv/bin/python starter.py cancel <workflow-id>   # Signal — a durable write
-```
-
-After both commands finish, open the run's Event History in the UI and look
-for `WorkflowExecutionSignaled` — it's there, timestamped right after your
-`cancel` call. Search the same history for anything from your `status` call:
-there is nothing, at any point. That difference is the point: Queries are
-reads served from replayed state and leave no trace, Signals are events that
-change what replay produces.
-
-## Experiment 3 — break determinism
-
-Open `workflows.py` in your editor, find the block commented
-`EXPERIMENT 3` (inside `OrderWorkflow.run`, near the top), and uncomment the
-three lines (`import datetime` and the `workflow.logger.info(...)` call).
-Save the file, restart the Worker (terminal 2: `ctrl-c`, then
-`.venv/bin/python worker.py`), and start a run from terminal 3
-(`.venv/bin/python starter.py start`). It fails almost immediately — look at
-terminal 2's Worker log for a sandbox violation error naming `datetime.now`.
-That sandbox is a safety net for the common cases, not a proof. When you're
-done, comment the block back out and restart the Worker again so later
-experiments run against clean code.
-
-The failure mode that actually bites in production is subtler: changing
-Workflow code while old runs are still in flight. Simulate it from terminal
-3 (Worker running normally, no env vars):
-
-```bash
-# 1. run one to completion, then record its history
-.venv/bin/python starter.py start
-.venv/bin/python replay_check.py save <workflow-id>
-
-# 2. it replays cleanly against current code
-.venv/bin/python replay_check.py check
-```
-
-You should see `OK   <workflow-id>.json` printed. Now open `workflows.py`
-and swap the order of the `charge_payment` and `reserve_inventory` blocks
-(the two `await workflow.execute_activity(...)` calls near the top of
-`run`) — cut/paste one above the other so inventory is reserved before
-payment is charged. Save the file, then re-run the check (no need to restart
-anything — `replay_check.py` reads the file itself):
-
-```bash
-.venv/bin/python replay_check.py check
-```
-
-This time it fails with a non-determinism error printed in terminal 3: the
-recorded history says payment was scheduled first, the new code says
-inventory. Read the error message — it names the mismatched Command. **Run
-`replay_check.py` in CI.** The real fixes for shipping such a change are
-`workflow.patched()` for in-flight runs, or Worker Versioning to pin old runs
-to old Workers. When you're done, revert the swap in `workflows.py` (put
-`charge_payment` back first) so later experiments match the README.
-
-## Experiment 4 — tests that skip time
-
-No Worker or Temporal Service needed for this one — the test framework spins
-up its own in-memory server. You can even stop terminal 1 and 2 if you want.
-From the repo root:
-
-```bash
-.venv/bin/python -m pytest -q
-```
-
-You should see 3 tests pass in a couple seconds.
-`tests/test_order_workflow.py` mocks Activities by name and runs against a
-time-skipping test server. To see the time-skipping itself: open
-`workflows.py`, find `CANCELLATION_WINDOW = timedelta(seconds=10)` near the
-top, change it to `timedelta(days=30)`, save, and re-run `pytest -q` — the
-tests still pass in about a second, even though the Workflow they're testing
-now waits a full month before shipping. Timers are fast-forwarded, which is
-what makes month-long Workflows testable at all. Revert the change back to
-`timedelta(seconds=10)` afterward.
-
-> Heads up: the first run downloads a test-server binary from
-> `temporal.download`. In a sandboxed or air-gapped environment that download
-> is blocked and all three tests fail on `Failed starting test server` — that's
-> the network, not the code.
-
-## Experiment 5 — pick it apart yourself
-
-- Make `charge_payment` non-idempotent (append to a module-level list, print
-  the length). Run it flaky. Now you understand why at-least-once matters.
-- Set `maximum_attempts=1` and compare the failure in the history.
-- Add a `@workflow.update` handler with a validator that rejects an amount
-  change after shipping — Updates are the read-write, rejectable sibling of
-  Signals.
-- Replace the Timer with a Child Workflow and see how the parent's history
-  records it.
-- Loop the Workflow a few thousand times and hit the history-size warning, then
-  fix it with `workflow.continue_as_new()`.
+Nine tests: Activities mocked by name, so orchestration is the unit under test.
+By default `pytest` uses a **time-skipping** test server — set
+`CANCELLATION_WINDOW` to 30 days and the suite still finishes in about a second.
+`./lab.sh test` instead points them at your running server (see
+`tests/conftest.py`), which is what to do when the test-server download is
+blocked.
 
 ---
 
-## Where to read next
+## Three traps this repo hit for real
 
-Now that you have hooks to hang it on:
+These aren't hypothetical; each one broke something here first.
 
-- [How Temporal works](https://docs.temporal.io/encyclopedia/architecture/how-temporal-works) — the encyclopedia entry the rest of the docs assume.
-- [Temporal Service architecture](https://docs.temporal.io/temporal-service) — the four services in depth.
-- [learn.temporal.io](https://learn.temporal.io) — free 101/102 courses, Python track included.
-- [Python SDK developer guide](https://docs.temporal.io/develop/python) — Signals, Queries, Updates, Child Workflows, versioning.
+**Initialise state in `__init__`, not in `run()`.** Signal and Update handlers
+can execute *before* the first line of your `@workflow.run` method. A counter
+that set `self._total = start` at the top of `run()` silently discarded an
+Update that arrived in the first Workflow Task. `@workflow.init` is the fix —
+see `CounterWorkflow`.
+
+**Drain handlers before Continue-As-New.** Continue-As-New ends the run
+immediately, so an Update still executing is lost and its caller sees a failure.
+`await workflow.wait_condition(workflow.all_handlers_finished)` first.
+
+**A Worker runs the code it imported, not the code on disk.** Edit a Workflow
+and forget to restart the Worker and you get histories that don't match your
+source — which then fail replay in confusing ways. Two Workers on one Task Queue
+with different code is the same problem, and is exactly what Worker Versioning
+exists to solve.
 
 ## The rough edges, honestly
 
 - **Versioning long-running Workflows** across deploys is the hard part of
-  operating Temporal. Nothing else comes close.
-- **Payload and history limits** — 2 MB per payload, 50 MB / ~50k events per
-  history. Pass references, not blobs; use `continue_as_new` for long loops.
-- **Determinism rules are learned by violating them.** Which is why this repo
-  is arranged the way it is.
+  operating Temporal. Nothing else is close.
+- **Payload and history limits** — 2 MB per payload, ~50 MB / 50k events per
+  history. Pass references, not blobs; `continue_as_new` for long loops.
+- **Determinism rules are learned by violating them**, which is why this repo is
+  arranged the way it is.
+
+## Where to read next
+
+- [How Temporal works](https://docs.temporal.io/encyclopedia/architecture/how-temporal-works)
+- [Temporal Service architecture](https://docs.temporal.io/temporal-service)
+- [Python SDK developer guide](https://docs.temporal.io/develop/python)
+- [learn.temporal.io](https://learn.temporal.io) — free 101/102 courses
+
+## Files
+
+| File | Read it for | What it does |
+|---|---|---|
+| `workflows.py` | The saga. **Start here.** | Defines `OrderWorkflow`: charge payment, reserve inventory, wait out a cancellable Timer window, ship, and compensate (release inventory, refund payment) on cancellation or shipping failure. Exposes a `cancel` Signal and a `status` Query. |
+| `activities.py` | The side-effecting half. | `charge_payment`, `reserve_inventory`, `ship_order` (with heartbeats), and the compensations `refund_payment` / `release_inventory`. `FLAKY_ACTIVITIES` and `FAIL_SHIPPING` inject transient and non-retryable failures on demand. |
+| `concepts.py` | One tiny Workflow per concept. | Update + validator, Child Workflows, Continue-As-New, real cancellation with shielded cleanup, deterministic `now`/`uuid4`/`random`, Local Activities, `patched` versioning, Search Attributes and Memos. Heavily commented — read before running. |
+| `worker.py` | Wiring and Task Queue registration. | Connects to the Service, registers every Workflow and Activity on the `orders` Task Queue, and long-polls until killed. |
+| `starter.py` | The Client, for the saga. | `start`, `status`, `cancel` — start a run, Query a running one, or send it a cancel Signal. |
+| `concepts_client.py` | The Client, for the concepts. | One subcommand per concept, each printing what to look for in the resulting history. |
+| `scheduling.py` | All three scheduling mechanisms. | The Schedules API (create, describe, trigger, pause, backfill, delete), legacy cron, and one-shot start delay. |
+| `shared.py` | Types crossing the Worker/Client boundary. | `TASK_QUEUE` plus the `OrderInput` / `OrderStatus` dataclasses; kept plain because everything here gets serialized. |
+| `replay_check.py` | The pre-deploy determinism check. | `save` fetches a completed Workflow's history to disk; `check` replays saved histories against current code. This is the thing to run in CI. |
+| `replay_break.py` | The non-determinism demonstration. | Replays a history against a modified *copy* of the module, so it can show the failure without ever writing to `workflows.py`. |
+| `lab.sh` | Every experiment, one command each. | Starts/stops the server and Worker, and drives each experiment. Run it with no arguments for the list. |
+| `bootstrap_server.sh` | Getting a Temporal CLI. | Tries the official installer, then falls back to building the CLI from the Go module proxy for locked-down networks. Installs into `./bin`. |
+| `tests/` | Testing Workflows. | Nine tests with Activities mocked by name, against a time-skipping server (or a live one — see `tests/conftest.py`). |
+| `WORKFLOW_MAP.md` | Call-graph diagrams for the saga. | Which Workflow calls which Activity, for which use case — useful alongside `workflows.py`. |

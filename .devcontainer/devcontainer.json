@@ -1,21 +1,36 @@
 {
-  "name": "temporal-exercise",
-  "image": "mcr.microsoft.com/devcontainers/python:1-3.12-bullseye",
+  "name": "Temporal learning lab",
+  "image": "mcr.microsoft.com/devcontainers/python:3.11-bookworm",
+
+  "features": {
+    // Only needed by bootstrap_server.sh's fallback path, which builds the
+    // Temporal CLI from source when temporal.download is unreachable.
+    // Codespaces can normally reach it, so this is belt and braces.
+    "ghcr.io/devcontainers/features/go:1": { "version": "1.24" }
+  },
+
   "postCreateCommand": "bash .devcontainer/postCreate.sh",
-  "forwardPorts": [8233, 7233],
+
+  // 7233 is the gRPC endpoint your Worker and Client talk to.
+  // 8233 is the Web UI -- this is the one to open in your browser.
+  "forwardPorts": [7233, 8233],
   "portsAttributes": {
     "8233": {
       "label": "Temporal Web UI",
       "onAutoForward": "openBrowser"
     },
     "7233": {
-      "label": "Temporal gRPC frontend",
+      "label": "Temporal gRPC",
       "onAutoForward": "silent"
     }
   },
+
   "customizations": {
     "vscode": {
-      "extensions": ["ms-python.python"]
+      "extensions": ["ms-python.python"],
+      "settings": {
+        "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python"
+      }
     }
   }
 }

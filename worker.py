@@ -15,6 +15,7 @@ from temporalio.client import Client
 from temporalio.worker import Worker
 
 from activities import ALL_ACTIVITIES
+from concepts import CONCEPT_ACTIVITIES, CONCEPT_WORKFLOWS
 from shared import TASK_QUEUE
 from workflows import OrderWorkflow
 
@@ -26,8 +27,8 @@ async def main() -> None:
     worker = Worker(
         client,
         task_queue=TASK_QUEUE,
-        workflows=[OrderWorkflow],
-        activities=ALL_ACTIVITIES,
+        workflows=[OrderWorkflow, *CONCEPT_WORKFLOWS],
+        activities=[*ALL_ACTIVITIES, *CONCEPT_ACTIVITIES],
     )
     logging.info("Worker polling task queue %r -- ctrl-c to kill it", TASK_QUEUE)
     await worker.run()

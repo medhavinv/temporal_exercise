@@ -10,7 +10,6 @@ failure paths on purpose in Experiment 2 of the README.
 
 import asyncio
 import os
-import random
 
 from temporalio import activity
 from temporalio.exceptions import ApplicationError
@@ -19,9 +18,17 @@ from shared import OrderInput
 
 
 def _maybe_fail(name: str) -> None:
-    """Fail ~half the time when FLAKY_ACTIVITIES=1, so retries become visible."""
-    if os.environ.get("FLAKY_ACTIVITIES") == "1" and random.random() < 0.5:
-        raise RuntimeError(f"{name} hit a transient error (injected)")
+    """Fail the first two attempts when FLAKY_ACTIVITIES=1.
+
+    Keyed on the attempt number rather than randomly, so the retry sequence in
+    the Event History is the same every time you run the experiment. Note that
+    `activity.info()` is fine here -- Activities have no determinism rules.
+    """
+    if os.environ.get("FLAKY_ACTIVITIES") != "1":
+        return
+    attempt = activity.info().attempt
+    if attempt < 3:
+        raise RuntimeError(f"{name} failed on attempt {attempt} (injected)")
 
 
 @activity.defn

@@ -62,6 +62,7 @@ client → Frontend → History appends WorkflowExecutionStarted
 | `starter.py` | Starting, querying, and signalling from outside. |
 | `tests/test_order_workflow.py` | Time-skipping tests with mocked Activities. |
 | `replay_check.py` | The pre-deploy determinism check. |
+| `WORKFLOW_MAP.md` | Diagrams: which Workflow calls which Activity, for which use case. |
 
 ---
 

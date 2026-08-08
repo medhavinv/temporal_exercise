@@ -34,7 +34,7 @@ async def start(wait: bool) -> None:
         id=order_id,
         task_queue=TASK_QUEUE,
     )
-    print(f"started {handle.id} (run {handle.result_run_id})")
+    print(f"started Workflow ID {handle.id} (Run ID {handle.result_run_id})")
     print(f"watch it at http://localhost:8233/namespaces/default/workflows/{handle.id}")
 
     if wait:

@@ -87,34 +87,38 @@ client → Frontend → History appends WorkflowExecutionStarted
 
 ## Concept coverage
 
-Every entry is runnable. `./lab.sh <command>`.
+Every entry is runnable: `./lab.sh <command>`. The **Exp.** column is the
+experiment that covers it, so you can jump straight to whichever concept you
+came for — or find out which experiment you have already done.
 
-| Concept | Command | Where it lives |
-|---|---|---|
-| Workflows, Activities, Task Queues | `order` | `workflows.py`, `activities.py` |
-| Idempotency / at-least-once | `double-charge` | `charge_payment` |
-| **Event History** | `history` | read it in the Web UI too |
-| **Replay** | `replay-break` | `replay_break.py` |
-| **Durable Timers** | `crash` | `wait_condition(timeout=…)` |
-| **Signal** | `signal-query` | `@workflow.signal` |
-| **Query** | `signal-query` | `@workflow.query` |
-| **Update** + validator | `update` | `CounterWorkflow` |
-| Retries & backoff | `retries` | `RetryPolicy` |
-| Heartbeats | `cancellation` | `activity.heartbeat` |
-| Saga / compensation | `compensation` | `OrderWorkflow._compensate` |
-| Crash durability | `crash` | the flagship demo |
-| **Child Workflows** | `child` | `ParentWorkflow` |
-| **Continue-As-New** | `continue-as-new` | `CounterWorkflow` |
-| **Cancellation** + cleanup | `cancellation` | `CancellationWorkflow` |
-| Deterministic `now`/`uuid4`/`random` | `determinism` | `DeterminismWorkflow` |
-| Local Activities | `local-activity` | `LocalActivityWorkflow` |
-| **Versioning** (`patched`) | `versioning` | `VersionedWorkflow` |
-| Search Attributes, Memos, Visibility | `searchable` | `SearchableWorkflow` |
-| **Schedules** (pause, trigger, backfill) | `schedule` | `scheduling.py` |
-| Start Delay | `schedule-delay` | `scheduling.py` |
-| Cron (legacy) | `schedule-cron` | `scheduling.py` |
-| Time-skipping tests, mocked Activities | `test` | `tests/` |
-| Replay tests for CI | `replay-check` | `replay_check.py` |
+| Concept | Exp. | Command | Where it lives |
+|---|---|---|---|
+| Workflows, Activities, Task Queues | [0](#0-a-run-end-to-end) | `order` | `workflows.py`, `activities.py` |
+| **Event History** | [1](#1-read-the-event-history) | `history` | read it in the Web UI too |
+| Crash durability | [2a](#2-break-things-on-purpose) | `crash` | the flagship demo |
+| **Durable Timers** | [2a](#2-break-things-on-purpose) | `crash` | `wait_condition(timeout=…)` |
+| Retries & backoff | [2b](#2-break-things-on-purpose) | `retries` | `RetryPolicy` |
+| Saga / compensation | [2c](#2-break-things-on-purpose) | `compensation` | `OrderWorkflow._compensate` |
+| **Signal** | [2d](#2-break-things-on-purpose) | `signal-query` | `@workflow.signal` |
+| **Query** | [2d](#2-break-things-on-purpose) | `signal-query` | `@workflow.query` |
+| **Replay** & non-determinism | [3](#3-break-determinism) | `replay-break` | `replay_break.py` |
+| The Workflow sandbox | [3](#3-break-determinism) | `variant broken-determinism` | `variants.py` |
+| Time-skipping tests, mocked Activities | [4](#4-tests-that-skip-time) | `test` | `tests/` |
+| Replay tests for CI | [4](#4-tests-that-skip-time) | `replay-check` | `replay_check.py` |
+| Idempotency / at-least-once | [5](#5-pick-it-apart-yourself) | `double-charge` | `charge_payment` |
+| Retry policy tuning | [5](#5-pick-it-apart-yourself) | `variant no-retries` | `variants.py` |
+| **Update** + validator | [5](#5-pick-it-apart-yourself) | `update` | `CounterWorkflow` |
+| **Child Workflows** | [5](#5-pick-it-apart-yourself) | `child` | `ParentWorkflow` |
+| **Continue-As-New** | [5](#5-pick-it-apart-yourself) | `continue-as-new` | `CounterWorkflow` |
+| Deterministic `now`/`uuid4`/`random` | [6](#6-one-concept-at-a-time-new) | `determinism` | `DeterminismWorkflow` |
+| **Cancellation** + cleanup | [6](#6-one-concept-at-a-time-new) | `cancellation` | `CancellationWorkflow` |
+| Heartbeats | [6](#6-one-concept-at-a-time-new) | `cancellation` | `activity.heartbeat` |
+| Local Activities | [6](#6-one-concept-at-a-time-new) | `local-activity` | `LocalActivityWorkflow` |
+| **Versioning** (`patched`) | [6](#6-one-concept-at-a-time-new) | `versioning` | `VersionedWorkflow` |
+| Search Attributes, Memos, Visibility | [6](#6-one-concept-at-a-time-new) | `searchable` | `SearchableWorkflow` |
+| **Schedules** (pause, trigger, backfill) | [6](#6-one-concept-at-a-time-new) | `schedule` | `scheduling.py` |
+| Start Delay | [6](#6-one-concept-at-a-time-new) | `schedule-delay` | `scheduling.py` |
+| Cron (legacy) | [6](#6-one-concept-at-a-time-new) | `schedule-cron` | `scheduling.py` |
 
 Not covered, deliberately: Nexus, multi-cluster replication, custom Data
 Converters and payload encryption, interceptors, and Worker Versioning
@@ -170,6 +174,17 @@ itself.
 
 ## The experiments, in order
 
+> **Returning from an earlier version of this repo?** The numbering is
+> unchanged — Experiments 0–5 are the same exercises they always were, and
+> only the commands got shorter. If you finished **Experiment 2**, pick up at
+> [Experiment 3](#3-break-determinism). Experiment 6 is new material appended
+> at the end, so it disturbs nothing before it.
+>
+> What changed: the old three-terminal dance
+> (`temporal server start-dev` / `python worker.py` / `starter.py`) is now
+> `./lab.sh up` once, then one command per experiment. Nothing asks you to
+> edit a file any more.
+
 ### 0. A run, end to end
 
 ```bash
@@ -195,29 +210,71 @@ Ask: *if I deleted my Worker and all its memory, could I rebuild
 
 ### 2. Break things on purpose
 
+Same four sub-experiments as before, one command each. Each one restarts the
+Worker with the right flags and puts it back to normal afterwards.
+
+**2a. Kill the Worker mid-flight.**
+
 ```bash
-./lab.sh crash          # kill the Worker mid-run; watch it resume
-./lab.sh retries        # injected failures and automatic retry
-./lab.sh compensation   # non-retryable failure, saga rollback
-./lab.sh signal-query   # Signal vs Query, and how they differ in the history
+./lab.sh crash
 ```
 
-`crash` is the one that matters. The Workflow stays `RUNNING` with no Worker
-alive at all, its 10-second Timer fires while nothing of yours is running, and
-when a Worker returns it finishes. **You wrote no recovery code.**
+The one that matters. The Workflow stays `RUNNING` with no Worker alive at
+all, its 10-second Timer fires while nothing of yours is running, and when a
+Worker returns it finishes. **You wrote no recovery code.**
 
-`retries` contains a genuine surprise: **retries produce no events**. There is
-no `ActivityTaskFailed` for a retried-then-successful Activity. Temporal records
-`ActivityTaskScheduled` once, then only the *terminal* attempt — the one that
-finally succeeds, or the last one if retries are exhausted — as a single
-`ActivityTaskStarted` / `ActivityTaskCompleted` pair. Attempts in between live
-in the Service's mutable state, not the history.
+**2b. Watch retries.**
+
+```bash
+./lab.sh retries
+```
+
+A genuine surprise, and a correction to what earlier versions of this README
+said: **retries produce no events**. There is no `ActivityTaskFailed` for a
+retried-then-successful Activity. Temporal records `ActivityTaskScheduled`
+once, then only the *terminal* attempt — the one that finally succeeds, or the
+last one if retries are exhausted — as a single `ActivityTaskStarted` /
+`ActivityTaskCompleted` pair. Attempts in between live in the Service's
+mutable state, not the history.
 
 So the history of a flaky Activity is as compact as a clean one. The giveaway
 is the `attempt` counter on `ActivityTaskStarted` reading `3` instead of `1`,
-plus its `lastFailure` field. To *watch* retries happen rather than infer them,
-tail the Worker log (`.run/worker.log`): each failed attempt is logged there
-with its traceback and a growing backoff between them.
+plus its `lastFailure` field. To *watch* retries happen rather than infer
+them, tail the Worker log (`.run/worker.log`): each failed attempt is logged
+there with its traceback and a growing backoff between them.
+
+**2c. Watch the saga compensate.**
+
+```bash
+./lab.sh compensation
+```
+
+`ship_order` raises a non-retryable `ApplicationError`, so no retries happen;
+the Workflow catches it and runs `release_inventory` then `refund_payment` in
+reverse order before failing. Compare the two failure modes: 2b retried
+invisibly, 2c surfaced into your code.
+
+To see what the saga is actually buying you, run the same failure with the
+rollback switched off:
+
+```bash
+./lab.sh variant no-compensation
+```
+
+`compensations_run` comes back empty — the customer is charged and the stock
+is still held, for an order that will never ship.
+
+**2d. Signals and Queries.**
+
+```bash
+./lab.sh signal-query
+```
+
+Starts a run, Queries it mid-flight, sends the `cancel` Signal, and Queries
+again. The Signal lands in the history as `WorkflowExecutionSignaled`; the
+Query does not appear at all. That difference is the point: Queries are reads
+served from replayed state, Signals are events that change what replay
+produces.
 
 ### 3. Break determinism
 
@@ -241,37 +298,63 @@ making no progress — what a bad deploy actually looks like. Note the contrast
 with Activity retries: a failing *Workflow* Task **is** recorded, as
 `WorkflowTaskFailed` events.
 
-### 4. One concept at a time
-
-```bash
-./lab.sh update            # Update + validator vs Signal vs Query
-./lab.sh continue-as-new   # roll over a long history, keeping the Workflow ID
-./lab.sh child             # Child Workflows in parallel
-./lab.sh cancellation      # real cancellation + shielded cleanup
-./lab.sh determinism       # workflow.now / uuid4 / random
-./lab.sh local-activity    # the marker instead of the scheduled/started pair
-./lab.sh versioning        # workflow.patched() for in-flight deploys
-./lab.sh searchable        # Search Attributes, Memos, Visibility queries
-./lab.sh schedule          # create, describe, trigger, pause, backfill, delete
-```
-
-Read each Workflow in `concepts.py` before running its command — they're small
-and the comments carry the reasoning.
-
-### 5. Tests
+### 4. Tests that skip time
 
 ```bash
 ./lab.sh test
 ```
 
 Eleven tests: Activities mocked by name, so orchestration is the unit under
-test. By default `pytest` uses a **time-skipping** test server, which
-fast-forwards Timers.
-`./lab.sh test` instead points them at your running server (see
-`tests/conftest.py`), which is what to do when the test-server download is
-blocked. One test uses the `long-window` variant to park on a **30-day** Timer
-and still finish in milliseconds; it skips itself when there is no time
-skipping available.
+test rather than the side effects. `pytest` uses a **time-skipping** test
+server by default, which fast-forwards Timers.
+
+To see the time-skipping itself — which used to mean editing
+`CANCELLATION_WINDOW` — there is now a test that does it for you. The
+`long-window` variant parks on a **30-day** Timer and the test still finishes
+in milliseconds. It skips itself when no time-skipping server is available:
+
+```
+tests/test_order_workflow.py::test_long_window_variant_resolves_instantly_under_time_skipping
+```
+
+`./lab.sh test` points the suite at your already-running server instead of
+downloading the test-server binary (see `tests/conftest.py`) — that's what to
+do when `temporal.download` is blocked. The 30-day test is the one that skips
+in that mode, for the obvious reason.
+
+### 5. Pick it apart yourself
+
+The old version of this experiment was a list of code edits. Each one is now a
+command:
+
+| Try this | Command | What you should notice |
+|---|---|---|
+| Make `charge_payment` non-idempotent and run it flaky | `./lab.sh double-charge` | One customer charged **three times** for one order. At-least-once is not exactly-once. |
+| Set `maximum_attempts=1` and compare the failure | `./lab.sh variant no-retries` | The first injected failure is terminal. Same Activities, same failures, different `RetryPolicy`. |
+| Add an Update handler with a validator | `./lab.sh update` | The rejected Update leaves **nothing** in the history and does not change state. |
+| Replace the Timer with a Child Workflow | `./lab.sh child` | `StartChildWorkflowExecutionInitiated` pairs in the parent, plus separate Workflows in `workflow list`. |
+| Grow the history until it needs `continue_as_new` | `./lab.sh continue-as-new` | Same Workflow ID, brand-new Run ID, state carried across, history reset to empty. |
+
+### 6. One concept at a time (new)
+
+Everything past this point is material the earlier version didn't have. Small,
+single-purpose Workflows in `concepts.py` — read each one before running its
+command; they're short and the comments carry the reasoning.
+
+```bash
+./lab.sh determinism       # workflow.now / uuid4 / random, stable across replay
+./lab.sh cancellation      # real cancellation + shielded cleanup
+./lab.sh local-activity    # a marker instead of the scheduled/started pair
+./lab.sh versioning        # workflow.patched() for in-flight deploys
+./lab.sh searchable        # Search Attributes, Memos, Visibility queries
+./lab.sh schedule          # create, describe, trigger, pause, backfill, delete
+./lab.sh schedule-delay    # one-shot deferred start
+./lab.sh schedule-cron     # the legacy path, for comparison
+```
+
+(`update`, `child` and `continue-as-new` live in `concepts.py` too — they're
+listed in Experiment 5 above because they were on the old "pick it apart"
+list.)
 
 ---
 

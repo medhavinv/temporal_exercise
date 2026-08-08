@@ -11,17 +11,26 @@ wedging production.
 
     # replay every saved history against the current code
     python replay_check.py check
+
+    # replay against an isolated copy instead of workflows.py (see README,
+    # Experiment 3)
+    WORKFLOW_MODULE=workflows_experiment3 python replay_check.py check
 """
 
 import argparse
 import asyncio
+import importlib
 import json
+import os
 import pathlib
 
 from temporalio.client import Client, WorkflowHistory
 from temporalio.worker import Replayer
 
-from workflows import OrderWorkflow
+# Defaults to the repo's own workflows.py; point this at an isolated copy to
+# replay saved histories against edited code without touching the original.
+WORKFLOW_MODULE = os.environ.get("WORKFLOW_MODULE", "workflows")
+OrderWorkflow = importlib.import_module(WORKFLOW_MODULE).OrderWorkflow
 
 HISTORY_DIR = pathlib.Path(__file__).parent / "histories"
 
@@ -48,7 +57,7 @@ async def check() -> None:
         history = WorkflowHistory.from_json(path.stem, json.loads(path.read_text()))
         await replayer.replay_workflow(history)
         print(f"OK   {path.name}")
-    print(f"\nreplayed {len(paths)} histories against the current code")
+    print(f"\nreplayed {len(paths)} histories against {WORKFLOW_MODULE}.py")
 
 
 def main() -> None:

@@ -58,10 +58,10 @@ client → Frontend → History appends WorkflowExecutionStarted
 |---|---|---|
 | `workflows.py` | Deterministic orchestration: the saga, a durable Timer, a Signal, a Query. **Start here.** | Defines `OrderWorkflow`, the state machine driving the order saga: charge payment, reserve inventory, wait out a cancellable Timer window, ship, and compensate (release inventory, refund payment) on cancellation or shipping failure. Exposes a `cancel` Signal and a `status` Query. |
 | `activities.py` | The side-effecting half, plus injectable failures and compensations. | Implements the Activities the Workflow calls: `charge_payment`, `reserve_inventory`, `ship_order` (with heartbeats), and their compensations `refund_payment` / `release_inventory`. Reads `FLAKY_ACTIVITIES` and `FAIL_SHIPPING` env vars to inject transient and non-retryable failures on demand. |
-| `worker.py` | Wiring code and Task Queue registration. | Connects to the local Temporal Service, registers `OrderWorkflow` and `ALL_ACTIVITIES` on the `orders` Task Queue, and long-polls for work until killed. |
+| `worker.py` | Wiring code and Task Queue registration. | Connects to the local Temporal Service, registers `OrderWorkflow` and `ALL_ACTIVITIES` on the `orders` Task Queue, and long-polls for work until killed. Reads `WORKFLOW_MODULE` (default `workflows`) to source `OrderWorkflow` from an alternate file — see Experiment 3. |
 | `starter.py` | Starting, querying, and signalling from outside. | CLI (`start`, `status`, `cancel`) that talks to the Temporal Service as a Client: starts a new `OrderWorkflow` run, queries a running Workflow's status, or sends it a cancel Signal. |
 | `shared.py` | Types and constants shared across the Worker/Client boundary. | Defines the `TASK_QUEUE` constant and the `OrderInput` / `OrderStatus` dataclasses used as Workflow input and Query output; kept plain since anything crossing the boundary gets serialized. |
-| `replay_check.py` | The pre-deploy determinism check. | CLI (`save`, `check`) that fetches and saves a completed Workflow's Event History to `histories/`, then replays saved histories against the current `workflows.py` to catch non-deterministic code changes before deploy. |
+| `replay_check.py` | The pre-deploy determinism check. | CLI (`save`, `check`) that fetches and saves a completed Workflow's Event History to `histories/`, then replays saved histories against the current `workflows.py` to catch non-deterministic code changes before deploy. Also reads `WORKFLOW_MODULE`, same as `worker.py`. |
 | `tests/test_order_workflow.py` | Time-skipping tests with mocked Activities. | Pytest suite covering the happy path, shipping-failure compensation, and cancel-Signal compensation, run against a time-skipping test server with Activities mocked by name. |
 | `pytest.ini` | Test runner configuration. | Points pytest at the `tests/` directory, adds the repo root to `pythonpath`, and enables `asyncio_mode = auto` for the async test functions. |
 | `requirements.txt` | Python dependencies. | Pins `temporalio`, `pytest`, and `pytest-asyncio` versions needed to run the Worker, Client, and test suite. |
@@ -276,39 +276,59 @@ change what replay produces.
 
 ## Experiment 3 — break determinism
 
-Open `workflows.py` in your editor, find the block commented
-`EXPERIMENT 3` (inside `OrderWorkflow.run`, near the top), and uncomment the
-three lines (`import datetime` and the `workflow.logger.info(...)` call).
-Save the file, restart the Worker (terminal 2: `ctrl-c`, then
-`.venv/bin/python worker.py`), and start a run from terminal 3
-(`.venv/bin/python starter.py start`). It fails almost immediately — look at
-terminal 2's Worker log for a sandbox violation error naming `datetime.now`.
-That sandbox is a safety net for the common cases, not a proof. When you're
-done, comment the block back out and restart the Worker again so later
-experiments run against clean code.
+This experiment has you edit Workflow code twice, on purpose, to watch it
+break. Rather than editing `workflows.py` in place and having to carefully
+revert each change afterward, work on an isolated copy and point the Worker
+at it with the `WORKFLOW_MODULE` environment variable — `workflows.py`
+itself stays clean throughout, and later experiments don't inherit any
+leftover edits:
 
-The failure mode that actually bites in production is subtler: changing
-Workflow code while old runs are still in flight. Simulate it from terminal
-3 (Worker running normally, no env vars):
+```bash
+cp workflows.py workflows_experiment3.py
+```
+
+`workflows_experiment3.py` matches `*.gitignore`'d `workflows_*.py`, so it
+won't get committed either. Edit *that* file for both parts below, and pass
+`WORKFLOW_MODULE=workflows_experiment3` to every command that needs to run
+against it. When you're done with the experiment, just stop passing
+`WORKFLOW_MODULE` (or delete the copy) — no revert needed.
+
+**3a. Sandbox violation.** Open `workflows_experiment3.py`, find the block
+commented `EXPERIMENT 3` (inside `OrderWorkflow.run`, near the top), and
+uncomment the three lines (`import datetime` and the
+`workflow.logger.info(...)` call). Save the file, restart the Worker
+against the copy (terminal 2: `ctrl-c`, then
+`WORKFLOW_MODULE=workflows_experiment3 .venv/bin/python worker.py`), and
+start a run from terminal 3 (`.venv/bin/python starter.py start`). It fails
+almost immediately — look at terminal 2's Worker log for a sandbox
+violation error naming `datetime.now`. That sandbox is a safety net for the
+common cases, not a proof.
+
+**3b. Non-determinism against a real history.** The failure mode that
+actually bites in production is subtler: changing Workflow code while old
+runs are still in flight. Simulate it from terminal 3. First, restart the
+Worker on the *clean* `workflows.py` (terminal 2: `ctrl-c`, then
+`.venv/bin/python worker.py`, no `WORKFLOW_MODULE`) so this run's history
+reflects unmodified code:
 
 ```bash
 # 1. run one to completion, then record its history
 .venv/bin/python starter.py start
 .venv/bin/python replay_check.py save <workflow-id>
 
-# 2. it replays cleanly against current code
+# 2. it replays cleanly against the current code
 .venv/bin/python replay_check.py check
 ```
 
-You should see `OK   <workflow-id>.json` printed. Now open `workflows.py`
-and swap the order of the `charge_payment` and `reserve_inventory` blocks
-(the two `await workflow.execute_activity(...)` calls near the top of
+You should see `OK   <workflow-id>.json` printed. Now, in
+`workflows_experiment3.py` (revert the Experiment 3a uncomment first if you
+haven't), swap the order of the `charge_payment` and `reserve_inventory`
+blocks (the two `await workflow.execute_activity(...)` calls near the top of
 `run`) — cut/paste one above the other so inventory is reserved before
-payment is charged. Save the file, then re-run the check (no need to restart
-anything — `replay_check.py` reads the file itself):
+payment is charged. Save the file, then re-run the check against the copy:
 
 ```bash
-.venv/bin/python replay_check.py check
+WORKFLOW_MODULE=workflows_experiment3 .venv/bin/python replay_check.py check
 ```
 
 This time it fails with a non-determinism error printed in terminal 3: the
@@ -316,8 +336,19 @@ recorded history says payment was scheduled first, the new code says
 inventory. Read the error message — it names the mismatched Command. **Run
 `replay_check.py` in CI.** The real fixes for shipping such a change are
 `workflow.patched()` for in-flight runs, or Worker Versioning to pin old runs
-to old Workers. When you're done, revert the swap in `workflows.py` (put
-`charge_payment` back first) so later experiments match the README.
+to old Workers.
+
+When you're done, delete the scratch copy and restart the Worker on the
+original so later experiments run against clean code:
+
+```bash
+rm workflows_experiment3.py
+```
+
+```bash
+# terminal 2
+.venv/bin/python worker.py
+```
 
 ## Experiment 4 — tests that skip time
 

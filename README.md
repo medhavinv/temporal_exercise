@@ -65,10 +65,20 @@ client → Frontend → History appends WorkflowExecutionStarted
 | `tests/test_order_workflow.py` | Time-skipping tests with mocked Activities. | Pytest suite covering the happy path, shipping-failure compensation, and cancel-Signal compensation, run against a time-skipping test server with Activities mocked by name. |
 | `pytest.ini` | Test runner configuration. | Points pytest at the `tests/` directory, adds the repo root to `pythonpath`, and enables `asyncio_mode = auto` for the async test functions. |
 | `requirements.txt` | Python dependencies. | Pins `temporalio`, `pytest`, and `pytest-asyncio` versions needed to run the Worker, Client, and test suite. |
+| `WORKFLOW_MAP.md` | Diagrams: which Workflow calls which Activity, for which use case. | Reference diagrams of the saga's call graph — useful alongside `workflows.py` when tracing which Activity a given step invokes. |
 
 ---
 
 ## Setup
+
+### Option A — GitHub Codespaces
+
+This repo has a `.devcontainer` config. Open it with **Code → Create codespace
+on main**, wait for the postCreate script to install the Temporal CLI and
+Python deps, then skip to the two-terminal step below. Codespaces will
+auto-forward port 8233 and offer to open the Web UI in your browser.
+
+### Option B — local machine
 
 ```bash
 # 1. Temporal CLI (server + Web UI in one binary)
@@ -78,7 +88,7 @@ curl -sSf https://temporal.download/cli.sh | sh    # or: brew install temporal
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 ```
 
-Three terminals from here on — the experiments below refer to them by number:
+### Three terminals from here on — the experiments below refer to them by number
 
 ```bash
 # terminal 1 — the Temporal Service. --db-filename makes it survive restarts.
@@ -90,9 +100,10 @@ temporal server start-dev --db-filename temporal.db
 # terminal 3 — the Client, used to start/query/signal Workflows (kept idle for now)
 ```
 
-Server on `localhost:7233`. Open the Web UI now, at
-<http://localhost:8233>, and keep the tab open — you'll come back to it
-throughout the experiments below to watch runs and inspect Event Histories.
+Server on `localhost:7233`. Open the Web UI now, at <http://localhost:8233>
+(in Codespaces, use the forwarded-port URL instead of `localhost`), and keep
+the tab open — you'll come back to it throughout the experiments below to
+watch runs and inspect Event Histories.
 
 ---
 

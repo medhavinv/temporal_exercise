@@ -54,14 +54,17 @@ client → Frontend → History appends WorkflowExecutionStarted
 
 ## The files
 
-| File | Read it for |
-|---|---|
-| `workflows.py` | Deterministic orchestration: the saga, a durable Timer, a Signal, a Query. **Start here.** |
-| `activities.py` | The side-effecting half, plus injectable failures and compensations. |
-| `worker.py` | Wiring code and Task Queue registration. |
-| `starter.py` | Starting, querying, and signalling from outside. |
-| `tests/test_order_workflow.py` | Time-skipping tests with mocked Activities. |
-| `replay_check.py` | The pre-deploy determinism check. |
+| File | Read it for | What it does |
+|---|---|---|
+| `workflows.py` | Deterministic orchestration: the saga, a durable Timer, a Signal, a Query. **Start here.** | Defines `OrderWorkflow`, the state machine driving the order saga: charge payment, reserve inventory, wait out a cancellable Timer window, ship, and compensate (release inventory, refund payment) on cancellation or shipping failure. Exposes a `cancel` Signal and a `status` Query. |
+| `activities.py` | The side-effecting half, plus injectable failures and compensations. | Implements the Activities the Workflow calls: `charge_payment`, `reserve_inventory`, `ship_order` (with heartbeats), and their compensations `refund_payment` / `release_inventory`. Reads `FLAKY_ACTIVITIES` and `FAIL_SHIPPING` env vars to inject transient and non-retryable failures on demand. |
+| `worker.py` | Wiring code and Task Queue registration. | Connects to the local Temporal Service, registers `OrderWorkflow` and `ALL_ACTIVITIES` on the `orders` Task Queue, and long-polls for work until killed. |
+| `starter.py` | Starting, querying, and signalling from outside. | CLI (`start`, `status`, `cancel`) that talks to the Temporal Service as a Client: starts a new `OrderWorkflow` run, queries a running Workflow's status, or sends it a cancel Signal. |
+| `shared.py` | Types and constants shared across the Worker/Client boundary. | Defines the `TASK_QUEUE` constant and the `OrderInput` / `OrderStatus` dataclasses used as Workflow input and Query output; kept plain since anything crossing the boundary gets serialized. |
+| `replay_check.py` | The pre-deploy determinism check. | CLI (`save`, `check`) that fetches and saves a completed Workflow's Event History to `histories/`, then replays saved histories against the current `workflows.py` to catch non-deterministic code changes before deploy. |
+| `tests/test_order_workflow.py` | Time-skipping tests with mocked Activities. | Pytest suite covering the happy path, shipping-failure compensation, and cancel-Signal compensation, run against a time-skipping test server with Activities mocked by name. |
+| `pytest.ini` | Test runner configuration. | Points pytest at the `tests/` directory, adds the repo root to `pythonpath`, and enables `asyncio_mode = auto` for the async test functions. |
+| `requirements.txt` | Python dependencies. | Pins `temporalio`, `pytest`, and `pytest-asyncio` versions needed to run the Worker, Client, and test suite. |
 
 ---
 

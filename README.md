@@ -67,6 +67,15 @@ client → Frontend → History appends WorkflowExecutionStarted
 
 ## Setup
 
+### Option A — GitHub Codespaces
+
+This repo has a `.devcontainer` config. Open it with **Code → Create codespace
+on main**, wait for the postCreate script to install the Temporal CLI and
+Python deps, then skip to the two-terminal step below. Codespaces will
+auto-forward port 8233 and offer to open the Web UI in your browser.
+
+### Option B — local machine
+
 ```bash
 # 1. Temporal CLI (server + Web UI in one binary)
 curl -sSf https://temporal.download/cli.sh | sh    # or: brew install temporal
@@ -75,7 +84,7 @@ curl -sSf https://temporal.download/cli.sh | sh    # or: brew install temporal
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 ```
 
-Two terminals from here on:
+### Two terminals from here on
 
 ```bash
 # terminal 1 — the Temporal Service. --db-filename makes it survive restarts.
@@ -85,7 +94,8 @@ temporal server start-dev --db-filename temporal.db
 .venv/bin/python worker.py
 ```
 
-Server on `localhost:7233`, Web UI on <http://localhost:8233>.
+Server on `localhost:7233`, Web UI on <http://localhost:8233> (in Codespaces,
+use the forwarded-port URL instead of `localhost`).
 
 ---
 

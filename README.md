@@ -255,6 +255,16 @@ your code, 2c's surfaced and drove new Activity calls.
 **2d. Signals and Queries.** Restart the Worker with no env vars
 (`.venv/bin/python worker.py` in terminal 2), then in terminal 3:
 
+> **Watch out:** if this run ends up failed and rolled back (`"order ...
+> failed and was rolled back"`) instead of cancelled, you likely have a
+> *stale* Worker from 2c still running somewhere (an old terminal tab, or a
+> background process) still holding `FAIL_SHIPPING=1`. Multiple Workers can
+> poll the same Task Queue at once, and the stale one can win the race for
+> the `ship_order` Activity Task even though the Worker you meant to use has
+> no env vars set. Run `ps aux | grep worker.py`, kill any leftover
+> instances, and make sure only the fresh terminal-2 Worker is running before
+> retrying.
+
 ```bash
 .venv/bin/python starter.py start --no-wait
 ```

@@ -74,9 +74,18 @@ client → Frontend → History appends WorkflowExecutionStarted
 ### Option A — GitHub Codespaces
 
 This repo has a `.devcontainer` config. Open it with **Code → Create codespace
-on main**, wait for the postCreate script to install the Temporal CLI and
-Python deps, then skip to the two-terminal step below. Codespaces will
-auto-forward port 8233 and offer to open the Web UI in your browser.
+on main** and wait for the postCreate script to finish — it installs the
+Temporal CLI and Python deps for you, so there's nothing left to set up
+manually. Then skip straight to the terminal steps below.
+
+Notes specific to Codespaces:
+
+- `temporal` is added to `PATH` via `.bashrc`, but that only takes effect in
+  *new* terminals opened after setup finishes. If a terminal reports
+  `command not found`, either open a fresh terminal or use the full path:
+  `~/.temporalio/bin/temporal`.
+- When you start the server, Codespaces will prompt to forward port 8233 —
+  use that forwarded URL for the Web UI instead of `localhost:8233`.
 
 ### Option B — local machine
 

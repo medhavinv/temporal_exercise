@@ -219,13 +219,21 @@ FLAKY_ACTIVITIES=1 .venv/bin/python worker.py
 ```
 
 In terminal 3, start a new run (`.venv/bin/python starter.py start`) and
-while it runs, refresh the Web UI's Event History for that run. Look for one
-or more `ActivityTaskFailed` events immediately followed by another
-`ActivityTaskScheduled` for the same Activity — that's the SDK retrying per
-the `RetryPolicy` in `workflows.py`, with the delay between attempts growing
-each time (the backoff). Note the *Workflow* history has no failure in it at
-the top level; your Workflow code never saw the error, only the eventual
-success.
+watch terminal 2 — the Worker logs each failed attempt (`Completing activity
+as failed`, with a traceback and an incrementing `attempt` number) as the SDK
+retries per the `RetryPolicy` in `workflows.py`, with the delay between
+attempts growing each time (the backoff).
+
+Don't expect to see this in the Event History, though. Temporal doesn't write
+a history event for every failed retry — it only records `ActivityTaskScheduled`
+once, then whichever attempt is *terminal* (the one that finally succeeds, or
+the last one if retries are exhausted) as a single `ActivityTaskStarted` /
+`ActivityTaskCompleted` pair. The giveaway that retries happened at all is the
+`Attempt` field on that `ActivityTaskStarted` event — it'll read `2`, `3`, etc.
+instead of `1`, with no earlier attempts visible in between. So: the *log* is
+where you watch retries happen; the *history* only shows you the outcome.
+Note the *Workflow* history has no failure in it at the top level either way;
+your Workflow code never saw the error, only the eventual success.
 
 **2c. Watch the saga compensate.** Restart the Worker again (terminal 2,
 `ctrl-c` then):

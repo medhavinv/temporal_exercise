@@ -213,6 +213,7 @@ class OrderWorkflow:
             if config.compensate_on_failure:
                 self._stage = "compensating"
                 await self._compensate()
+                outcome = "was rolled back"
             else:
                 workflow.logger.warning(
                     "shipping failed and this variant skips compensation: "
@@ -220,13 +221,22 @@ class OrderWorkflow:
                     self._payment_id,
                     self._reservation_id,
                 )
+                outcome = (
+                    f"was NOT rolled back (payment {self._payment_id} and "
+                    f"reservation {self._reservation_id} are orphaned)"
+                )
             self._stage = "failed"
             # ApplicationError is how you deliberately fail a Workflow. The
             # Client sees this as a WorkflowFailureError. We set the terminal
             # stage *before* raising so a post-mortem `status` Query still
             # reports what happened.
+            #
+            # The message reports what actually happened rather than assuming
+            # the rollback ran: under `no-compensation` a "was rolled back"
+            # message would be a lie, and the WorkflowExecutionFailed event is
+            # exactly where someone reading the history would believe it.
             raise ApplicationError(
-                f"order {order.order_id} failed and was rolled back"
+                f"order {order.order_id} failed and {outcome}"
             ) from err
 
         self._stage = "completed"

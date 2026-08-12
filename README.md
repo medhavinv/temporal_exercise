@@ -185,18 +185,45 @@ itself.
 > `./lab.sh up` once, then one command per experiment. Nothing asks you to
 > edit a file any more.
 
+Each experiment below is written the same way: **the concept** it demonstrates,
+**what actually runs**, and **where to look** — terminal, Web UI, or Worker log
+— with what the thing you find there means. Read the "where to look" part
+*before* running the command; most of these produce output that looks
+unremarkable until you know which line is the point.
+
 ### 0. A run, end to end
 
 ```bash
 ./lab.sh order
 ```
 
+**The concept — Workflow, Activity, Task Queue.** The Workflow is orchestration
+code and never touches the outside world itself; it emits Commands, and a
+Worker polling the `orders` Task Queue runs the Activities that do the real
+work. Temporal stores and routes, it never executes your code.
+
+**What runs.** One `OrderWorkflow`: charge payment → reserve inventory → wait
+out a 10s cancellation Timer → ship. It completes.
+
+**Where to look.** The terminal prints the **Workflow ID** (yours, chosen by
+the Client) and the **Run ID** (Temporal's, for this one attempt at it) plus a
+Web UI link. Open it — a `COMPLETED` execution. That run is the raw material
+for Experiment 1, so leave the tab open.
+
 ### 1. Read the Event History
 
-**The highest-value step in the whole repo.** Open the run in the Web UI (port
-8233), expand the history, and map every event to a line of `workflows.py`:
+**The highest-value step in the whole repo.**
 
-- `WorkflowExecutionStarted` — your `start_workflow` call.
+**The concept — the Event History.** This append-only log *is* the Workflow's
+state. There is no other copy: your `self._payment_id` exists only because it
+can be rebuilt from these events. Everything else in Temporal follows from
+that.
+
+**Where to look.** Open the run in the Web UI (port 8233), expand the history,
+and map every event back to a line of `workflows.py`:
+
+- `WorkflowExecutionStarted` — your `start_workflow` call. Its
+  `input` field holds the variant, recorded permanently.
 - `WorkflowTaskScheduled/Started/Completed` — one *slice* of your Workflow code
   executing. There are several. Find where each begins and ends in the source.
 - `ActivityTaskScheduled` — the Command your code emitted at
@@ -205,13 +232,15 @@ itself.
 - `ActivityTaskStarted/Completed` — a Worker actually ran it.
 - `TimerStarted/TimerFired` — your `wait_condition` timeout.
 
-Ask: *if I deleted my Worker and all its memory, could I rebuild
-`self._payment_id` from this list alone?* That's replay.
+**What it means.** Ask: *if I deleted my Worker and all its memory, could I
+rebuild `self._payment_id` from this list alone?* If yes, the Workflow is
+durable. That reconstruction is replay, and Experiment 3 is what happens when
+it goes wrong.
 
 ### 2. Break things on purpose
 
-Same four sub-experiments as before, one command each. Each one restarts the
-Worker with the right flags and puts it back to normal afterwards.
+Four sub-experiments, one command each. Each one restarts the Worker with the
+right flags and puts it back to normal afterwards.
 
 **2a. Kill the Worker mid-flight.**
 
@@ -219,9 +248,22 @@ Worker with the right flags and puts it back to normal afterwards.
 ./lab.sh crash
 ```
 
-The one that matters. The Workflow stays `RUNNING` with no Worker alive at
-all, its 10-second Timer fires while nothing of yours is running, and when a
-Worker returns it finishes. **You wrote no recovery code.**
+**The concept — durable execution and durable Timers.** Workflow progress lives
+server-side, not in your process. A Timer is a row in the History service, not
+a `sleep` in your code, so it keeps counting while nothing of yours exists.
+
+**What runs.** Starts a run, kills the Worker three seconds in, waits 15s with
+*no Worker alive at all*, then restarts the Worker.
+
+**Where to look.** The terminal status lines are the whole demo: `RUNNING` with
+the Worker dead, still `RUNNING` after the 10s Timer fired with nothing of
+yours executing, then `COMPLETED` once a Worker comes back. In the Web UI the
+history has no gap and no error — `TimerFired` is recorded during the window
+when you had no process at all.
+
+**What it means.** You wrote no recovery code, no checkpointing, no retry
+loop. This is the one experiment worth re-running until it stops feeling
+surprising.
 
 **2b. Watch retries.**
 
@@ -229,19 +271,29 @@ Worker returns it finishes. **You wrote no recovery code.**
 ./lab.sh retries
 ```
 
-A genuine surprise, and a correction to what earlier versions of this README
-said: **retries produce no events**. There is no `ActivityTaskFailed` for a
-retried-then-successful Activity. Temporal records `ActivityTaskScheduled`
-once, then only the *terminal* attempt — the one that finally succeeds, or the
-last one if retries are exhausted — as a single `ActivityTaskStarted` /
-`ActivityTaskCompleted` pair. Attempts in between live in the Service's
-mutable state, not the history.
+**The concept — automatic retries and `RetryPolicy`.** A failed Activity is
+re-run by the Service with growing backoff, without the Workflow knowing.
+Retries happen in the Service's *mutable state*, not in the history.
 
-So the history of a flaky Activity is as compact as a clean one. The giveaway
-is the `attempt` counter on `ActivityTaskStarted` reading `3` instead of `1`,
-plus its `lastFailure` field. To *watch* retries happen rather than infer
-them, tail the Worker log (`.run/worker.log`): each failed attempt is logged
-there with its traceback and a growing backoff between them.
+**What runs.** The Worker is restarted with `--flaky`, so every Activity fails
+its first two attempts. The Workflow still completes.
+
+**Where to look.** Three places, and the contrast between them is the lesson:
+
+- **Web UI** — there are **no `ActivityTaskFailed` events**. Temporal records
+  `ActivityTaskScheduled` once, then only the *terminal* attempt (the one that
+  finally succeeds, or the last one if retries run out) as a single
+  `ActivityTaskStarted` / `ActivityTaskCompleted` pair.
+- **Terminal** — the script prints the `attempt` counter and `lastFailure` for
+  each `ActivityTaskStarted`. `attempt=3` on an otherwise clean-looking event
+  is the only trace in the history that anything went wrong.
+- **`.run/worker.log`** — to *watch* retries rather than infer them. Every
+  failed attempt is here with its traceback and a visibly growing gap between
+  them.
+
+**What it means.** The history of a flaky Activity is as compact as a clean
+one. When debugging a slow Workflow, "no failure events" does not mean "no
+failures" — check `attempt`.
 
 **2c. Watch the saga compensate.**
 
@@ -249,20 +301,30 @@ there with its traceback and a growing backoff between them.
 ./lab.sh compensation
 ```
 
-`ship_order` raises a non-retryable `ApplicationError`, so no retries happen;
-the Workflow catches it and runs `release_inventory` then `refund_payment` in
-reverse order before failing. Compare the two failure modes: 2b retried
-invisibly, 2c surfaced into your code.
+**The concept — the Saga pattern.** Temporal has no rollback. Undo is ordinary
+code you write: compensating Activities, run in reverse order, in an exception
+handler.
 
-To see what the saga is actually buying you, run the same failure with the
-rollback switched off:
+**What runs.** The Worker is restarted with `--fail-shipping`, so `ship_order`
+raises a **non-retryable** `ApplicationError` — no retries, the failure goes
+straight into your code. `OrderWorkflow._compensate` runs `release_inventory`
+then `refund_payment` before failing the Workflow.
+
+**Where to look.** Terminal: `compensations_run` lists the two undo steps. Web
+UI: `ActivityTaskScheduled` for the compensating Activities *after* the failed
+`ship_order`, then `WorkflowExecutionFailed`. Compare with 2b — that failure
+retried invisibly and never reached your code; this one surfaced as a Python
+exception. Retryable vs non-retryable is the switch between the two.
+
+Then run the same failure with the rollback switched off:
 
 ```bash
 ./lab.sh variant no-compensation
 ```
 
-`compensations_run` comes back empty — the customer is charged and the stock
-is still held, for an order that will never ship.
+`compensations_run` comes back empty — the customer is charged and the stock is
+still held, for an order that will never ship. That's the cost of the saga you
+just skipped.
 
 **2d. Signals and Queries.**
 
@@ -270,11 +332,21 @@ is still held, for an order that will never ship.
 ./lab.sh signal-query
 ```
 
-Starts a run, Queries it mid-flight, sends the `cancel` Signal, and Queries
-again. The Signal lands in the history as `WorkflowExecutionSignaled`; the
-Query does not appear at all. That difference is the point: Queries are reads
-served from replayed state, Signals are events that change what replay
-produces.
+**The concept — Signal vs Query.** A Signal is a fire-and-forget *write* that
+becomes part of the history. A Query is a synchronous *read* served from
+replayed state and must never mutate anything.
+
+**What runs.** Starts a run, Queries it mid-flight, sends the `cancel` Signal,
+Queries again.
+
+**Where to look.** Terminal shows the status changing between the two Queries.
+In the Web UI, the Signal is there as `WorkflowExecutionSignaled` — and the two
+Queries **do not appear at all**.
+
+**What it means.** Anything that changes what replay produces must be in the
+history; a Query changes nothing, so recording it would be pure cost. That's
+also why a Query handler that mutates state is a bug — it would only "happen"
+on the machine that served it.
 
 ### 3. Break determinism
 
@@ -282,9 +354,29 @@ produces.
 ./lab.sh replay-break
 ```
 
-Records a fresh run, replays it against the real code (passes), then against a
-copy with two Activities swapped (fails with a non-determinism error). It works
-on an in-memory copy, so `workflows.py` is never modified.
+**The concept — replay and non-determinism.** Temporal rebuilds Workflow state
+by re-running your code against the recorded history. Your code must issue the
+same Commands, in the same order, as the run that produced that history.
+
+**What runs.** The Workflow runs successfully once — that's the completed run
+you'll see in the dashboard — and its history is saved to JSON. Then the
+`Replayer` runs twice over that same saved history: once against the real code
+(right order — passes), once against an in-memory copy with two Activities
+swapped (wrong order — fails).
+
+**Where to look.** Terminal: stage 1 prints `OK`, stage 2 prints `FAILED as it
+should:` with a `Nondeterminism error`. In the Web UI, open the recorded run
+and find the two `ActivityTaskScheduled` events — `charge_payment` has the
+lower **EventID**, `reserve_inventory` the higher. That order is baked in
+permanently, and it's exactly what the swapped code violates. Note that neither
+replay appears in the dashboard at all: replay is entirely offline and
+client-side, so there is no second run to look for.
+
+**What it means.** `Replayer` takes histories from real (or representative)
+executions — often pulled from production — and replays them against your *new*
+code offline, before you ship it. That's what `replay_check.py check` does, and
+it belongs in CI. Skip it and a reordering like this hangs every Workflow
+currently in flight.
 
 For the sandbox check, no editing either:
 
@@ -292,11 +384,23 @@ For the sandbox check, no editing either:
 ./lab.sh variant broken-determinism
 ```
 
-That runs a Workflow that calls `datetime.now()` in Workflow code. The sandbox
-rejects it, the Workflow Task fails on a loop, and the run sits in `RUNNING`
-making no progress — what a bad deploy actually looks like. Note the contrast
-with Activity retries: a failing *Workflow* Task **is** recorded, as
-`WorkflowTaskFailed` events.
+**The concept — the Workflow sandbox.** The SDK intercepts nondeterministic
+calls inside Workflow code and refuses to run them, rather than letting you
+record a history you can never replay.
+
+**What runs.** A variant that calls `datetime.now()` in Workflow code. The
+sandbox rejects it, so the Workflow Task fails and retries forever.
+
+**Where to look.** Terminal: status stays `RUNNING` while the pending Workflow
+Task's `attempt` counter climbs — running, but making no progress. The event
+counts printed show `WorkflowTaskFailed` events piling up and **no Activity
+ever scheduled**, because the Workflow never got past its first task.
+
+**What it means.** Two things. First, this is what a bad deploy actually looks
+like: not a crash or an alert, just Workflows that quietly stop advancing.
+Second, note the contrast with 2b — a failing *Activity* Task leaves no event,
+but a failing *Workflow* Task **is** recorded. Nothing is lost either: fix the
+code, restart the Worker, and the next retry succeeds.
 
 ### 4. Tests that skip time
 
@@ -304,53 +408,63 @@ with Activity retries: a failing *Workflow* Task **is** recorded, as
 ./lab.sh test
 ```
 
-Eleven tests: Activities mocked by name, so orchestration is the unit under
-test rather than the side effects. `pytest` uses a **time-skipping** test
-server by default, which fast-forwards Timers.
+**The concept — time-skipping tests, and replay tests for CI.** Workflow tests
+run against a test server that fast-forwards Timers instead of waiting them
+out, so durable waits cost no wall-clock time. Activities are mocked by name,
+which makes orchestration the unit under test rather than the side effects.
 
-To see the time-skipping itself — which used to mean editing
-`CANCELLATION_WINDOW` — there is now a test that does it for you. The
-`long-window` variant parks on a **30-day** Timer and the test still finishes
-in milliseconds. It skips itself when no time-skipping server is available:
+**What runs.** Eleven tests. The one to open is:
 
 ```
 tests/test_order_workflow.py::test_long_window_variant_resolves_instantly_under_time_skipping
 ```
 
-`./lab.sh test` points the suite at your already-running server instead of
-downloading the test-server binary (see `tests/conftest.py`) — that's what to
-do when `temporal.download` is blocked. The 30-day test is the one that skips
-in that mode, for the obvious reason.
+**Where to look.** That test uses the `long-window` variant, which parks on a
+**30-day** Timer — and the suite still finishes in milliseconds. Check the
+total runtime `pytest` prints against what those Timers "should" have cost.
+
+**What it means.** Durable Timers are free to hold and free to skip, so waits
+of days or months are testable like anything else. Two caveats worth knowing:
+`./lab.sh test` points the suite at your already-running server rather than
+downloading the test-server binary (see `tests/conftest.py`) — do that when
+`temporal.download` is blocked — and the 30-day test skips itself in that mode,
+because a real server has no time-skipping.
+
+The CI-facing half of this is `./lab.sh replay-check`, which replays every
+history saved in `histories/` against the current code — Experiment 3's failure
+mode, as a check you can gate a deploy on. Save one first with `./lab.sh
+replay-save <workflow-id>`.
 
 ### 5. Pick it apart yourself
 
 The old version of this experiment was a list of code edits. Each one is now a
 command:
 
-| Try this | Command | What you should notice |
-|---|---|---|
-| Make `charge_payment` non-idempotent and run it flaky | `./lab.sh double-charge` | One customer charged **three times** for one order. At-least-once is not exactly-once. |
-| Set `maximum_attempts=1` and compare the failure | `./lab.sh variant no-retries` | The first injected failure is terminal. Same Activities, same failures, different `RetryPolicy`. |
-| Add an Update handler with a validator | `./lab.sh update` | The rejected Update leaves **nothing** in the history and does not change state. |
-| Replace the Timer with a Child Workflow | `./lab.sh child` | `StartChildWorkflowExecutionInitiated` pairs in the parent, plus separate Workflows in `workflow list`. |
-| Grow the history until it needs `continue_as_new` | `./lab.sh continue-as-new` | Same Workflow ID, brand-new Run ID, state carried across, history reset to empty. |
+| Try this | Concept | Command | What to look for, and what it means |
+|---|---|---|---|
+| Make `charge_payment` non-idempotent and run it flaky | Idempotency / at-least-once | `./lab.sh double-charge` | The `payment_id` in the terminal output records **three** charges for one order. Temporal guarantees at-least-once, never exactly-once — the retry is correct, the Activity is the bug. Idempotency is your job. |
+| Set `maximum_attempts=1` and compare the failure | Retry policy tuning | `./lab.sh variant no-retries` | The Workflow fails on the first injected failure instead of retrying past it. Same Activities, same failures, different `RetryPolicy` — durability is configuration, not magic. |
+| Add an Update handler with a validator | Update + validator | `./lab.sh update` | Two accepted Updates appear as `WorkflowExecutionUpdateAccepted/Completed`; the rejected one leaves **nothing** in the history and doesn't change the total. A validator rejects before anything is recorded — unlike a Signal, which is already history by the time you see it. |
+| Replace the Timer with a Child Workflow | Child Workflows | `./lab.sh child` | `StartChildWorkflowExecutionInitiated` / `ChildWorkflowExecutionCompleted` pairs in the *parent's* history, plus three separate executions in `./lab.sh list`. Children get their own ID, own history, own retries. |
+| Grow the history until it needs `continue_as_new` | Continue-As-New | `./lab.sh continue-as-new` | Same Workflow ID, brand-new **Run ID**, state carried across, history reset to empty. Look for `WorkflowExecutionContinuedAsNew` ending the first run. This is the escape hatch for the ~50k event / 50 MB history limit. |
 
 ### 6. One concept at a time (new)
 
 Everything past this point is material the earlier version didn't have. Small,
 single-purpose Workflows in `concepts.py` — read each one before running its
-command; they're short and the comments carry the reasoning.
+command; they're short and the comments carry the reasoning. Each command also
+prints its own "look for:" line when it finishes.
 
-```bash
-./lab.sh determinism       # workflow.now / uuid4 / random, stable across replay
-./lab.sh cancellation      # real cancellation + shielded cleanup
-./lab.sh local-activity    # a marker instead of the scheduled/started pair
-./lab.sh versioning        # workflow.patched() for in-flight deploys
-./lab.sh searchable        # Search Attributes, Memos, Visibility queries
-./lab.sh schedule          # create, describe, trigger, pause, backfill, delete
-./lab.sh schedule-delay    # one-shot deferred start
-./lab.sh schedule-cron     # the legacy path, for comparison
-```
+| Command | Concept | What to look for, and what it means |
+|---|---|---|
+| `./lab.sh determinism` | Deterministic `now` / `uuid4` / `random` | The printed uuid and random values are *recorded* in the history, so replaying gives back the identical values. That's why you use `workflow.uuid4()` and not `uuid.uuid4()` — the SDK's versions are replay-safe by construction. |
+| `./lab.sh cancellation` | Cancellation + shielded cleanup | `WorkflowExecutionCancelRequested`, the 60s `slow_task` cancelling early, then the cleanup Activity **still running to completion** before `WorkflowExecutionCanceled`. Cancellation is cooperative: shielded cleanup is how you guarantee you still release what you acquired. |
+| `./lab.sh local-activity` | Local Activities | A single `MarkerRecorded` event instead of the usual `ActivityTaskScheduled/Started/Completed` trio — the Activity ran inside the Worker with no Matching round trip. Cheap and fast, but no independent retry across Workers; use for short, safe calls. |
+| `./lab.sh versioning` | `workflow.patched()` | `MarkerRecorded` carrying a patch id, and the result comes back uppercased (the new branch). A history recorded *before* the patch replays down the **old** branch. This is how you change Workflow code without breaking runs already in flight — the hardest part of operating Temporal. |
+| `./lab.sh searchable` | Search Attributes, Memos, Visibility | The `Category` attribute and the memo on `describe`, then a `Category = 'urgent'` query returning Workflows found without knowing any IDs. Search Attributes are indexed and queryable; Memos are stored but not indexed. |
+| `./lab.sh schedule` | Schedules | Create → describe → trigger early → pause → backfill → delete, all on a live Schedule. Schedules are first-class objects you can operate on; the runs they spawn are ordinary Workflows. |
+| `./lab.sh schedule-delay` | Start Delay | One Workflow, started once, later. No Schedule object involved — the delay is a start option. |
+| `./lab.sh schedule-cron` | Cron (legacy) | The same recurring idea attached to the Workflow itself. Compare with `schedule`: cron cannot be paused, triggered early, or backfilled, which is exactly why Schedules exist. |
 
 (`update`, `child` and `continue-as-new` live in `concepts.py` too — they're
 listed in Experiment 5 above because they were on the old "pick it apart"

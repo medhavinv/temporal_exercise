@@ -303,6 +303,14 @@ its first two attempts. The Workflow still completes.
 code you write: compensating Activities, run in reverse order, in an exception
 handler.
 
+In short: Temporal's behavior doesn't change on error — it still just runs
+your Workflow code to completion. What you control is what that code does
+once a failure reaches it. In practice that's a `try`/`except ActivityError`
+around the risky step, and compensation logic in the `except` block that
+calls ordinary (compensating) Activities. It only triggers for failures that
+actually reach your code — retries exhausted, or a non-retryable
+`ApplicationError` — never for a retry Temporal is still working through.
+
 **What runs.** The Worker is restarted with `--fail-shipping`, so `ship_order`
 raises a **non-retryable** `ApplicationError` — no retries, the failure goes
 straight into your code. `OrderWorkflow._compensate` runs `release_inventory`

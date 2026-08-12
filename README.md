@@ -427,15 +427,38 @@ tests/test_order_workflow.py::test_long_window_variant_resolves_instantly_under_
 ```
 
 **Where to look.** That test uses the `long-window` variant, which parks on a
-**30-day** Timer — and the suite still finishes in milliseconds. Check the
+**30-day** Timer — and the suite still finishes in about a second. Check the
 total runtime `pytest` prints against what those Timers "should" have cost.
 
-**What it means.** Durable Timers are free to hold and free to skip, so waits
-of days or months are testable like anything else. Two caveats worth knowing:
-`./lab.sh test` points the suite at your already-running server rather than
-downloading the test-server binary (see `tests/conftest.py`) — do that when
-`temporal.download` is blocked — and the 30-day test skips itself in that mode,
-because a real server has no time-skipping.
+**Which server you actually got.** This matters, because it decides whether the
+30-day test runs at all. Time skipping comes from a dedicated test-server binary
+the SDK downloads from `temporal.download` on first use; your own dev server
+cannot skip time. So `./lab.sh test` tries that binary first and falls back to
+the live server only if the download is unavailable:
+
+| What happened | What you see | The 30-day test |
+|---|---|---|
+| Time-skipping server started | Whole suite in ~1s | **runs** — this is the point of the exercise |
+| Download blocked, fell back | A `UserWarning` naming the failed URL, suite takes ~1 min | **skips itself**, with the reason printed |
+
+`./lab.sh test` passes `-rs`, so pytest prints the reason for every skip rather
+than a bare `s`. If you see the fallback warning, the 30-day test did not run —
+you are reading a real-time suite, and the headline claim above is untested on
+your machine. To force one mode or the other:
+
+```bash
+# never try time skipping; use a server you already have
+TEMPORAL_TEST_ADDRESS=localhost:7233 .venv/bin/python -m pytest -q -rs
+
+# no fallback: fail loudly instead of quietly running in real time
+.venv/bin/python -m pytest -q -rs
+```
+
+**What it means.** Durable Timers are free to hold and free to skip, so waits of
+days or months are testable like anything else — but only against a server built
+to skip them. That asymmetry is worth internalising: the same test file is a
+millisecond unit test or a minute-long integration test depending entirely on
+which server the fixture in `tests/conftest.py` handed it.
 
 The CI-facing half of this is `./lab.sh replay-check`, which replays every
 history saved in `histories/` against the current code — Experiment 3's failure
@@ -532,5 +555,5 @@ exists to solve.
 | `replay_break.py` | The non-determinism demonstration. | Replays a history against a modified *copy* of the module, so it can show the failure without ever writing to `workflows.py`. |
 | `lab.sh` | Every experiment, one command each. | Starts/stops the server and Worker, and drives each experiment. Run it with no arguments for the list. |
 | `bootstrap_server.sh` | Getting a Temporal CLI. | Tries the official installer, then falls back to building the CLI from the Go module proxy for locked-down networks. Installs into `./bin`. |
-| `tests/` | Testing Workflows. | Nine tests with Activities mocked by name, against a time-skipping server (or a live one — see `tests/conftest.py`). |
+| `tests/` | Testing Workflows. | Eleven tests with Activities mocked by name, against a time-skipping server (or a live one as fallback — see `tests/conftest.py`). |
 | `WORKFLOW_MAP.md` | Call-graph diagrams for the saga. | Which Workflow calls which Activity, for which use case — useful alongside `workflows.py`. |

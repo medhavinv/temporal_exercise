@@ -339,7 +339,7 @@ lab.sh -- drive every experiment in this repo
     up                    start the Temporal server and a Worker
     down                  stop both
     status                is anything running?
-    test                  run the test suite against the live server
+    test                  run the test suite (time-skipping if available)
 
   the order saga (workflows.py)
     order                 happy path, start to finish
@@ -386,7 +386,12 @@ case "${1:-}" in
       echo "server: up on $ADDRESS"; else echo "server: down"; fi
     if [ -f "$RUN/worker.pid" ] && kill -0 "$(cat "$RUN/worker.pid")" 2>/dev/null; then
       echo "worker: up"; else echo "worker: down"; fi ;;
-  test)          require_server; TEMPORAL_TEST_ADDRESS=$ADDRESS $PY -m pytest -q ;;
+  # The suite prefers the time-skipping test server, which is what makes the
+  # 30-day-Timer test meaningful. The live server is only a fallback, for
+  # machines that cannot download that binary -- see tests/conftest.py.
+  # -rs prints the reason for every skip, so a fallback run says why.
+  test)          require_server
+                 TEMPORAL_TEST_FALLBACK_ADDRESS=$ADDRESS $PY -m pytest -q -rs ;;
 
   order)         require_server; exp_order ;;
   signal-query)  require_server; exp_signal_query ;;

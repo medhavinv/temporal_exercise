@@ -261,9 +261,9 @@ yours executing, then `COMPLETED` once a Worker comes back. In the Web UI the
 history has no gap and no error — `TimerFired` is recorded during the window
 when you had no process at all.
 
-**What it means.** You wrote no recovery code, no checkpointing, no retry
-loop. This is the one experiment worth re-running until it stops feeling
-surprising.
+**What it means.** You wrote no recovery code, no checkpointing, no retry loop.
+The Timer kept counting because it lives in the History service, not in your
+process.
 
 **2b. Watch retries.**
 
@@ -278,22 +278,20 @@ Retries happen in the Service's *mutable state*, not in the history.
 **What runs.** The Worker is restarted with `--flaky`, so every Activity fails
 its first two attempts. The Workflow still completes.
 
-**Where to look.** Three places, and the contrast between them is the lesson:
+**Where to look.** Three places:
 
-- **Web UI** — there are **no `ActivityTaskFailed` events**. Temporal records
+- **Web UI** — **no `ActivityTaskFailed` events exist**. Temporal records
   `ActivityTaskScheduled` once, then only the *terminal* attempt (the one that
   finally succeeds, or the last one if retries run out) as a single
   `ActivityTaskStarted` / `ActivityTaskCompleted` pair.
 - **Terminal** — the script prints the `attempt` counter and `lastFailure` for
-  each `ActivityTaskStarted`. `attempt=3` on an otherwise clean-looking event
-  is the only trace in the history that anything went wrong.
-- **`.run/worker.log`** — to *watch* retries rather than infer them. Every
-  failed attempt is here with its traceback and a visibly growing gap between
-  them.
+  each `ActivityTaskStarted`. `attempt=3` is the only trace in the history that
+  anything went wrong.
+- **`.run/worker.log`** — to *watch* retries rather than infer them: every
+  failed attempt with its traceback and a growing backoff between them.
 
-**What it means.** The history of a flaky Activity is as compact as a clean
-one. When debugging a slow Workflow, "no failure events" does not mean "no
-failures" — check `attempt`.
+**What it means.** A flaky Activity's history is as compact as a clean one, so
+"no failure events" does not mean "no failures" — check `attempt`.
 
 **2c. Watch the saga compensate.**
 
@@ -312,9 +310,11 @@ then `refund_payment` before failing the Workflow.
 
 **Where to look.** Terminal: `compensations_run` lists the two undo steps. Web
 UI: `ActivityTaskScheduled` for the compensating Activities *after* the failed
-`ship_order`, then `WorkflowExecutionFailed`. Compare with 2b — that failure
-retried invisibly and never reached your code; this one surfaced as a Python
-exception. Retryable vs non-retryable is the switch between the two.
+`ship_order`, then `WorkflowExecutionFailed`.
+
+**What it means.** Compare with 2b: same "failure", but a retryable one never
+reaches your code, while a non-retryable one surfaces as a Python exception you
+can catch. That flag is the switch between the two behaviours.
 
 Then run the same failure with the rollback switched off:
 
@@ -323,8 +323,7 @@ Then run the same failure with the rollback switched off:
 ```
 
 `compensations_run` comes back empty — the customer is charged and the stock is
-still held, for an order that will never ship. That's the cost of the saga you
-just skipped.
+still held, for an order that will never ship.
 
 **2d. Signals and Queries.**
 
@@ -343,10 +342,10 @@ Queries again.
 In the Web UI, the Signal is there as `WorkflowExecutionSignaled` — and the two
 Queries **do not appear at all**.
 
-**What it means.** Anything that changes what replay produces must be in the
-history; a Query changes nothing, so recording it would be pure cost. That's
-also why a Query handler that mutates state is a bug — it would only "happen"
-on the machine that served it.
+**What it means.** Anything that changes what replay produces must be recorded;
+a Query changes nothing, so there is nothing to record. That's also why a Query
+handler that mutates state is a bug — the mutation would only "happen" on the
+machine that served it.
 
 ### 3. Break determinism
 

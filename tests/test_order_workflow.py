@@ -143,7 +143,8 @@ async def test_long_window_variant_resolves_instantly_under_time_skipping(env):
     """
     if not env.supports_time_skipping:
         pytest.skip(
-            "needs the time-skipping test server; this run is against a real one"
+            "needs the time-skipping test server; this run is against a real "
+            "server, where the only way past a 30-day Timer is to wait 30 days"
         )
 
     task_queue = f"tq-{uuid.uuid4()}"
